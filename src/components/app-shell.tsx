@@ -55,7 +55,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   Research Data Hub
                 </div>
                 <div className="truncate text-[11px] font-medium text-muted-foreground">
-                  Pavement research workspace
+                  Research data workspace
                 </div>
               </div>
             </div>

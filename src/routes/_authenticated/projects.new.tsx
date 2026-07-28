@@ -168,7 +168,7 @@ function NewProjectPage() {
               id="project_name"
               value={form.project_name}
               onChange={(e) => setForm({ ...form, project_name: e.target.value })}
-              placeholder="NRRA RA Field Mix Phase II"
+              placeholder="e.g. Field Mix Evaluation Phase II"
               required
               maxLength={120}
             />

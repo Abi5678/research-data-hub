@@ -80,12 +80,13 @@ function createWindow() {
   }
 }
 
+// Keep dev and packaged builds on the same userData directory. Research data
+// must not live inside the source tree; set DB_PATH for an isolated dev copy.
+app.setName("Research Data Hub");
+
 app.whenReady().then(() => {
   const dbPath =
-    process.env.DB_PATH ||
-    (isDev
-      ? path.join(__dirname, "..", "data", "local.sqlite3")
-      : path.join(app.getPath("userData"), "nrra-data.sqlite3"));
+    process.env.DB_PATH || path.join(app.getPath("userData"), "research-data-hub.sqlite3");
   dbApi.open(dbPath);
   console.log(`SQLite database: ${dbPath}`);
 

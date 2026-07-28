@@ -2,7 +2,7 @@
   "name": "research-data-hub",
   "version": "1.0.0",
   "description": "Offline desktop workspace: turn research CSVs into a queryable local database",
-  "author": "NRRA RA Field Mix Eval Phase II",
+  "author": "Research Data Hub",
   "private": true,
   "sideEffects": false,
   "type": "module",
@@ -103,7 +103,7 @@
     "wait-on": "^8.0.2"
   },
   "build": {
-    "appId": "com.nrra.researchdatahub",
+    "appId": "com.researchdatahub.app",
     "productName": "Research Data Hub",
     "directories": {
       "output": "release"

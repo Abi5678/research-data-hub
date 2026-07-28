@@ -108,8 +108,8 @@ Design a clean relational database schema for this data. Rules:
 2. Keep genuinely different data in separate tables.
 3. For each table pick clear snake_case column names. For every column choose exactly one type from: ${COLUMN_KINDS.map((k) => `"${k}"`).join(", ")}. When a source column is messy (mixed content, unit rows under headers), prefer "text".
 4. Map every table column to the source header it comes from ("source_header"). Columns like "source_label" that you introduce have "source_header": null.
-5. Identify a primary key column per table when a column looks unique per row (ids, specimen codes). Mark with "pk": true. Do not invent surrogate keys — the database adds row_id automatically.
-6. Identify foreign-key relationships BETWEEN your proposed tables when a column's values clearly reference another table's key column (matching names like section_id / specimen_code and overlapping sample values).
+5. Identify a primary key column per table when a column looks unique per row (record ids, sample codes). Mark with "pk": true. Do not invent surrogate keys — the database adds row_id automatically.
+6. Identify foreign-key relationships BETWEEN your proposed tables when a column's values clearly reference another table's key column (a name like <parent>_id or <parent>_code, plus overlapping sample values).
 7. Suggest a short project name describing the folder's research subject.
 
 Respond with ONLY a JSON object, no prose, in exactly this shape:

@@ -17,6 +17,7 @@ import { MappedDatasetUploadDialog } from "@/components/project/mapped-upload";
 import { ErdDiagram } from "@/components/project/erd-diagram";
 import {
   getTemplate,
+  stepLabels,
   type TemplateMeta,
   type TemplateTable,
   type ProjectTemplate,
@@ -57,12 +58,20 @@ type DatasetRow = {
   column_schema: ColumnSchema[];
 };
 
-const STEPS = [
-  { n: 1, label: "Test sections" },
-  { n: 2, label: "Specimens" },
-  { n: 3, label: "Test results" },
-  { n: 4, label: "Foreign keys" },
-] as const;
+/**
+ * Wizard steps 1-3 upload the template's step 1, 2 and 3+4 tables; wizard step 4
+ * maps foreign keys. Labels come from the template so the wizard reads correctly
+ * for any discipline, not just pavement research.
+ */
+function wizardSteps(template: ProjectTemplate) {
+  const [one, two, three] = stepLabels(template);
+  return [
+    { n: 1 as const, label: one },
+    { n: 2 as const, label: two },
+    { n: 3 as const, label: three },
+    { n: 4 as const, label: "Foreign keys" },
+  ];
+}
 
 function SetupWizardPage() {
   const { projectId } = Route.useParams();
@@ -137,9 +146,12 @@ function SetupWizardPage() {
     await saveMeta.mutateAsync({ bindings: nextBindings, fk_mappings: nextFkMap });
   };
 
-  const sectionsTable = template.tables.find((t) => t.key === "test_sections")!;
-  const specimensTable = template.tables.find((t) => t.key === "specimens")!;
+  // Driven by the template's own step numbers — never by hardcoded table keys,
+  // so a template with no "test_sections"/"specimens" table still works.
+  const step1Tables = template.tables.filter((t) => t.step === 1);
+  const step2Tables = template.tables.filter((t) => t.step === 2);
   const resultsTables = template.tables.filter((t) => t.step === 3 || t.step === 4);
+  const STEPS = wizardSteps(template);
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:py-10">
@@ -192,39 +204,39 @@ function SetupWizardPage() {
       </header>
 
       {step === 1 && (
-        <StepUploadOne
+        <UploadStep
           projectId={projectId}
-          table={sectionsTable}
+          stepNumber={1}
+          title={STEPS[0].label}
           template={template}
           bindings={bindings}
           datasets={datasets ?? []}
-          boundDatasetId={bindings[sectionsTable.key]}
-          onUploaded={async (id) => {
-            await bindTable(sectionsTable.key, id);
-          }}
+          tables={step1Tables}
+          onUploaded={bindTable}
           onNext={() => setStep(2)}
         />
       )}
 
       {step === 2 && (
-        <StepUploadOne
+        <UploadStep
           projectId={projectId}
-          table={specimensTable}
+          stepNumber={2}
+          title={STEPS[1].label}
           template={template}
           bindings={bindings}
           datasets={datasets ?? []}
-          boundDatasetId={bindings[specimensTable.key]}
-          onUploaded={async (id) => {
-            await bindTable(specimensTable.key, id);
-          }}
+          tables={step2Tables}
+          onUploaded={bindTable}
           onBack={() => setStep(1)}
           onNext={() => setStep(3)}
         />
       )}
 
       {step === 3 && (
-        <StepResults
+        <UploadStep
           projectId={projectId}
+          stepNumber={3}
+          title={STEPS[2].label}
           template={template}
           bindings={bindings}
           datasets={datasets ?? []}
@@ -253,6 +265,65 @@ function SetupWizardPage() {
         <ErdDiagram template={template} bindings={bindings} />
       </div>
     </div>
+  );
+}
+
+/**
+ * One wizard step covering however many template tables sit at that step:
+ * the single-table layout when there is exactly one, the grid otherwise.
+ */
+function UploadStep({
+  projectId,
+  stepNumber,
+  title,
+  template,
+  bindings,
+  datasets,
+  tables,
+  onUploaded,
+  onBack,
+  onNext,
+}: {
+  projectId: string;
+  stepNumber: number;
+  title: string;
+  template: ProjectTemplate;
+  bindings: Record<string, string>;
+  datasets: DatasetRow[];
+  tables: TemplateTable[];
+  onUploaded: (tableKey: string, datasetId: string) => Promise<void>;
+  onBack?: () => void;
+  onNext: () => void;
+}) {
+  if (tables.length === 1) {
+    const table = tables[0];
+    return (
+      <StepUploadOne
+        projectId={projectId}
+        table={table}
+        template={template}
+        bindings={bindings}
+        datasets={datasets}
+        boundDatasetId={bindings[table.key]}
+        onUploaded={(id) => onUploaded(table.key, id)}
+        onBack={onBack}
+        onNext={onNext}
+      />
+    );
+  }
+  return (
+    <StepResults
+      projectId={projectId}
+      stepNumber={stepNumber}
+      title={title}
+      template={template}
+      bindings={bindings}
+      datasets={datasets}
+      tables={tables}
+      onUploaded={onUploaded}
+      onBack={onBack}
+      onNext={onNext}
+    />
   );
 }
 
@@ -329,6 +400,8 @@ function StepUploadOne({
 
 function StepResults({
   projectId,
+  stepNumber,
+  title,
   template,
   datasets,
   tables,
@@ -338,18 +411,20 @@ function StepResults({
   onNext,
 }: {
   projectId: string;
+  stepNumber: number;
+  title: string;
   template: ProjectTemplate;
   datasets: DatasetRow[];
   tables: TemplateTable[];
   bindings: Record<string, string>;
   onUploaded: (tableKey: string, datasetId: string) => Promise<void>;
-  onBack: () => void;
+  onBack?: () => void;
   onNext: () => void;
 }) {
   return (
     <section className="rounded-2xl border border-border/70 bg-card p-6 shadow-card sm:p-8">
       <h2 className="text-lg font-bold text-foreground">
-        Step 3: Upload test result CSVs
+        Step {stepNumber}: Upload {title} CSVs
       </h2>
       <p className="mt-1 text-sm text-muted-foreground">
         Pick the target template table for each CSV. You can skip any you don't have —
@@ -405,9 +480,13 @@ function StepResults({
       </div>
 
       <div className="mt-6 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} className="gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
-        </Button>
+        {onBack ? (
+          <Button variant="ghost" onClick={onBack} className="gap-1">
+            <ArrowLeft className="h-3.5 w-3.5" /> Back
+          </Button>
+        ) : (
+          <span />
+        )}
         <Button onClick={onNext} className="gap-1">
           Next <ArrowRight className="h-3.5 w-3.5" />
         </Button>

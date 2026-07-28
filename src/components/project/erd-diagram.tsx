@@ -1,16 +1,10 @@
 import type { ProjectTemplate, TemplateTable } from "@/lib/templates";
+import { stepLabels } from "@/lib/templates";
 import { KeyRound, Link2 } from "lucide-react";
 
 type Props = {
   template: ProjectTemplate;
   bindings?: Record<string, string>; // template table key -> dataset uuid
-};
-
-const COLS: Record<1 | 2 | 3 | 4, string> = {
-  1: "Sections",
-  2: "Specimens",
-  3: "Test Results",
-  4: "Registry",
 };
 
 /**
@@ -20,6 +14,7 @@ const COLS: Record<1 | 2 | 3 | 4, string> = {
 export function ErdDiagram({ template, bindings }: Props) {
   const groups: Record<1 | 2 | 3 | 4, TemplateTable[]> = { 1: [], 2: [], 3: [], 4: [] };
   for (const t of template.tables) groups[t.step].push(t);
+  const labels = stepLabels(template);
 
   return (
     <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-card">
@@ -43,7 +38,7 @@ export function ErdDiagram({ template, bindings }: Props) {
         {([1, 2, 3, 4] as const).map((step) => (
           <div key={step} className="space-y-3">
             <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              {COLS[step]}
+              {labels[step - 1]}
             </div>
             {groups[step].map((t) => (
               <TableCard

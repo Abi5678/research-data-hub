@@ -115,8 +115,8 @@ export function GlobalSearch({
       <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-card">
         <div className="text-xs font-semibold text-foreground">Search this project</div>
         <p className="mt-1 text-[11px] text-muted-foreground">
-          Substring search across every column in every dataset. Best for specimen
-          codes, section IDs, sponsor names, or any text fragment.
+          Substring search across every column in every dataset. Best for sample
+          codes, record IDs, sponsor names, or any text fragment.
         </p>
         <form
           className="mt-3 flex items-center gap-2"
