@@ -12,6 +12,19 @@ const isDev = !app.isPackaged;
 /** Normalized absolute paths approved for folder import (dialog or env). */
 const approvedImportRoots = new Set();
 
+/** Database files the user picked in a dialog, eligible to be attached. */
+const approvedDatabaseFiles = new Set();
+
+function assertApprovedDatabaseFile(filePath) {
+  const resolved = path.resolve(filePath);
+  if (!approvedDatabaseFiles.has(resolved)) {
+    throw new Error(
+      "Database file not approved. Use “Attach database” in the app to pick the file first.",
+    );
+  }
+  return resolved;
+}
+
 function approveImportRoot(folderPath) {
   if (!folderPath) return;
   approvedImportRoots.add(path.resolve(folderPath));
@@ -28,10 +41,32 @@ function assertApprovedImportFolder(folderPath) {
 }
 
 function registerIpc() {
-  const methods = Object.keys(dbApi).filter((k) => k !== "open");
+  // attachSource takes a filesystem path, so it gets an explicit handler that
+  // checks the path came from a dialog rather than from renderer-supplied text.
+  const manual = new Set(["open", "attachSource"]);
+  const methods = Object.keys(dbApi).filter((k) => !manual.has(k));
   for (const name of methods) {
     ipcMain.handle(`db:${name}`, (_event, ...args) => dbApi[name](...args));
   }
+
+  ipcMain.handle("db:attachSource", (_event, projectId, filePath) =>
+    dbApi.attachSource(projectId, assertApprovedDatabaseFile(filePath)),
+  );
+
+  ipcMain.handle("db:pickDatabaseFile", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: "Attach an existing database",
+      properties: ["openFile"],
+      filters: [
+        { name: "SQLite database", extensions: ["db", "sqlite", "sqlite3", "db3"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    const picked = res.canceled ? null : res.filePaths[0];
+    if (picked) approvedDatabaseFiles.add(path.resolve(picked));
+    return picked;
+  });
 
   ipcMain.handle("llm:testConnection", () => llm.testConnection());
 

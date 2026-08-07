@@ -32,6 +32,17 @@ export type Dataset = {
   row_count: number;
   column_schema: ColumnSchema[];
   created_at: string;
+  /** 1 when the dataset is a view over an attached database — query only. */
+  read_only?: 0 | 1;
+};
+
+export type AttachedSource = {
+  id: string;
+  project_id: string;
+  alias: string;
+  file_path: string;
+  created_at: string;
+  table_count: number;
 };
 
 export type SavedQuery = {
@@ -109,6 +120,14 @@ export type LocalApi = {
   }): Promise<void>;
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string): Promise<void>;
+  /** Desktop only — the lab server has no local filesystem to attach from. */
+  pickDatabaseFile(): Promise<string | null>;
+  attachSource(
+    projectId: string,
+    filePath: string,
+  ): Promise<{ id: string; alias: string; file_path: string; table_count: number }>;
+  listAttachedSources(projectId: string): Promise<AttachedSource[]>;
+  detachSource(sourceId: string): Promise<void>;
   testLlmConnection(): Promise<{ model: string; reply: string }>;
   pickImportFolder(): Promise<string | null>;
   analyzeFolder(folderPath: string): Promise<AnalyzeFolderResult>;

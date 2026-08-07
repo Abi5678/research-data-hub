@@ -37,6 +37,10 @@ const DB_METHODS = [
   "insertExportHistory",
   "getSetting",
   "setSetting",
+  "attachSource",
+  "listAttachedSources",
+  "detachSource",
+  "pickDatabaseFile",
 ];
 
 const api = {};

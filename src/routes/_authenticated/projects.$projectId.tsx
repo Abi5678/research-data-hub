@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { ColumnSchema } from "@/lib/csv";
 import { DatasetUploadDialog } from "@/components/project/dataset-upload";
+import { AttachedSources } from "@/components/project/attached-sources";
 import { QueryTab } from "@/components/project/query-tab";
 import { ResultsTable } from "@/components/project/results-table";
 import { exportRows } from "@/lib/export";
@@ -508,6 +509,7 @@ function DatasetsTab({
         </div>
         <DatasetUploadDialog projectId={projectId} />
       </div>
+      <AttachedSources projectId={projectId} />
       {datasets.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-secondary/40 p-10 text-center">
           <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-gradient-primary shadow-glow">
@@ -533,8 +535,13 @@ function DatasetsTab({
                   <div className="text-[10px] font-bold uppercase tracking-wider text-primary">
                     {d.table_name}
                   </div>
-                  <h3 className="mt-0.5 truncate text-base font-bold text-foreground">
+                  <h3 className="mt-0.5 flex items-center gap-2 truncate text-base font-bold text-foreground">
                     {d.display_name}
+                    {d.read_only === 1 && (
+                      <Badge variant="outline" className="shrink-0 text-[9px]">
+                        attached · read-only
+                      </Badge>
+                    )}
                   </h3>
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                     <span>{d.row_count.toLocaleString()} rows</span>
@@ -558,6 +565,7 @@ function DatasetsTab({
                 >
                   <Download className="h-3.5 w-3.5" /> Export CSV
                 </Button>
+                {d.read_only !== 1 && (
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
                     <Button
@@ -588,6 +596,7 @@ function DatasetsTab({
                     </AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
+                )}
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-1.5">

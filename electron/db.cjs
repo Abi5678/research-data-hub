@@ -94,8 +94,196 @@ function open(dbPath) {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+    CREATE TABLE IF NOT EXISTS attached_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      alias TEXT NOT NULL UNIQUE,
+      file_path TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_attached_project_id ON attached_sources(project_id);
   `);
+  // Datasets backed by an attached database are query-only.
+  const hasReadOnly = db
+    .prepare("SELECT 1 FROM pragma_table_info('datasets') WHERE name = 'read_only'")
+    .get();
+  if (!hasReadOnly) {
+    db.exec("ALTER TABLE datasets ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0");
+  }
+  mountAttachedSources();
   return dbPath;
+}
+
+// ---------- attached source databases ----------
+//
+// A project can point at a curated SQLite file it does not own (a lab database
+// built by an ETL pipeline, say). The file is ATTACHed and each of its tables
+// is exposed as a TEMP VIEW named att_<alias>_<table>, so the existing SELECT
+// guardrails — which only understand plain identifiers — keep working
+// unchanged. Nothing here ever writes to the attached file: runProjectQuery
+// runs under PRAGMA query_only, which SQLite enforces across all attached
+// databases.
+
+const SQLITE_DECLTYPE_TO_KIND = [
+  [/int/i, "integer"],
+  [/char|clob|text/i, "text"],
+  [/real|floa|doub|num|dec/i, "double precision"],
+  [/bool/i, "boolean"],
+  [/date|time/i, "text"],
+];
+
+function declTypeToKind(declType) {
+  const t = String(declType || "");
+  for (const [re, kind] of SQLITE_DECLTYPE_TO_KIND) {
+    if (re.test(t)) return kind;
+  }
+  return "text";
+}
+
+function viewNameFor(alias, tableName) {
+  return `att_${alias}_${sanitizeIdent(tableName)}`;
+}
+
+/** Tables and views in an attached database, excluding SQLite internals. */
+function attachedTableNames(alias) {
+  return db
+    .prepare(
+      `SELECT name FROM ${quoteIdent(alias)}.sqlite_master
+       WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+    )
+    .all()
+    .map((r) => r.name);
+}
+
+function createViewsForAlias(alias) {
+  const created = [];
+  for (const table of attachedTableNames(alias)) {
+    const view = viewNameFor(alias, table);
+    db.exec(
+      `CREATE TEMP VIEW IF NOT EXISTS ${quoteIdent(view)} AS SELECT * FROM ${quoteIdent(alias)}.${quoteIdent(table)}`,
+    );
+    created.push({ table, view });
+  }
+  return created;
+}
+
+/** Re-ATTACH every recorded source on startup; views are per-connection. */
+function mountAttachedSources() {
+  let rows;
+  try {
+    rows = db.prepare("SELECT alias, file_path FROM attached_sources").all();
+  } catch {
+    return; // table not created yet on a fresh database
+  }
+  for (const row of rows) {
+    if (!fs.existsSync(row.file_path)) {
+      console.warn(`Attached source missing, skipped: ${row.file_path}`);
+      continue;
+    }
+    try {
+      db.prepare(`ATTACH DATABASE ? AS ${quoteIdent(row.alias)}`).run(row.file_path);
+      createViewsForAlias(row.alias);
+    } catch (err) {
+      console.warn(`Could not attach ${row.file_path}: ${err.message}`);
+    }
+  }
+}
+
+function attachSource(projectId, filePath) {
+  const project = db.prepare("SELECT id FROM projects WHERE id = ?").get(projectId);
+  if (!project) throw new Error("Project not found");
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) throw new Error(`No such database file: ${resolved}`);
+
+  const already = db
+    .prepare("SELECT 1 FROM attached_sources WHERE project_id = ? AND file_path = ?")
+    .get(projectId, resolved);
+  if (already) throw new Error("This database is already attached to the project");
+
+  const base = sanitizeIdent(path.basename(resolved, path.extname(resolved))).slice(0, 40);
+  let alias = base;
+  let n = 0;
+  const aliasTaken = db.prepare("SELECT 1 FROM attached_sources WHERE alias = ?");
+  while (aliasTaken.get(alias)) {
+    n += 1;
+    alias = `${base}_${n}`;
+  }
+
+  db.prepare(`ATTACH DATABASE ? AS ${quoteIdent(alias)}`).run(resolved);
+  let views;
+  try {
+    views = createViewsForAlias(alias);
+    if (views.length === 0) throw new Error("That database has no tables to attach");
+
+    const t = now();
+    const id = uuid();
+    const tx = db.transaction(() => {
+      db.prepare(
+        "INSERT INTO attached_sources (id, project_id, alias, file_path, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(id, projectId, alias, resolved, t);
+
+      for (const { table, view } of views) {
+        const columns = db
+          .prepare(`SELECT name, type FROM pragma_table_info(?)`)
+          .all(view)
+          .map((c) => ({ name: c.name, original_name: c.name, type: declTypeToKind(c.type) }));
+        const rowCount = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(view)}`).get().c;
+        db.prepare(
+          `INSERT INTO datasets (id, project_id, table_name, display_name, source_filename, row_count, column_schema, created_at, read_only)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        ).run(
+          uuid(),
+          projectId,
+          view,
+          table,
+          path.basename(resolved),
+          rowCount,
+          JSON.stringify(columns),
+          t,
+        );
+      }
+    });
+    tx();
+    return { id, alias, file_path: resolved, table_count: views.length };
+  } catch (err) {
+    for (const { view } of views ?? []) {
+      db.exec(`DROP VIEW IF EXISTS temp.${quoteIdent(view)}`);
+    }
+    db.exec(`DETACH DATABASE ${quoteIdent(alias)}`);
+    throw err;
+  }
+}
+
+function listAttachedSources(projectId) {
+  return db
+    .prepare(
+      `SELECT s.*, (SELECT COUNT(*) FROM datasets d WHERE d.project_id = s.project_id AND d.read_only = 1
+                      AND d.table_name LIKE 'att_' || s.alias || '_%') AS table_count
+       FROM attached_sources s WHERE s.project_id = ? ORDER BY s.created_at DESC`,
+    )
+    .all(projectId);
+}
+
+function detachSource(sourceId) {
+  const row = db.prepare("SELECT * FROM attached_sources WHERE id = ?").get(sourceId);
+  if (!row) throw new Error("Attached source not found");
+  const prefix = `att_${row.alias}_`;
+  const datasets = db
+    .prepare("SELECT id, table_name FROM datasets WHERE project_id = ? AND read_only = 1 AND table_name LIKE ?")
+    .all(row.project_id, `${prefix}%`);
+
+  const tx = db.transaction(() => {
+    for (const d of datasets) {
+      if (/^[a-z0-9_]+$/.test(d.table_name)) {
+        db.exec(`DROP VIEW IF EXISTS temp.${quoteIdent(d.table_name)}`);
+      }
+      db.prepare("DELETE FROM datasets WHERE id = ?").run(d.id);
+    }
+    db.prepare("DELETE FROM attached_sources WHERE id = ?").run(sourceId);
+  });
+  tx();
+  db.exec(`DETACH DATABASE ${quoteIdent(row.alias)}`);
 }
 
 function parseProject(row) {
@@ -118,6 +306,17 @@ function getDatasetOrThrow(datasetId) {
   if (!row) throw new Error("Dataset not found");
   if (!/^[a-z0-9_]+$/.test(row.table_name)) throw new Error("Invalid dataset table");
   return parseDataset(row);
+}
+
+/** Datasets backed by an attached database are read-only; detach to remove. */
+function getWritableDatasetOrThrow(datasetId) {
+  const ds = getDatasetOrThrow(datasetId);
+  if (ds.read_only) {
+    throw new Error(
+      `Dataset "${ds.display_name}" comes from an attached database and cannot be modified here`,
+    );
+  }
+  return ds;
 }
 
 // ---------- projects ----------
@@ -177,7 +376,14 @@ function updateProjectTemplateMeta(id, templateMeta) {
 }
 
 function deleteProject(id) {
-  const datasets = db.prepare("SELECT table_name FROM datasets WHERE project_id = ?").all(id);
+  // Detach first: those datasets are views over a file the project doesn't own,
+  // and the source file itself must survive deleting the project.
+  for (const s of db.prepare("SELECT id FROM attached_sources WHERE project_id = ?").all(id)) {
+    detachSource(s.id);
+  }
+  const datasets = db
+    .prepare("SELECT table_name FROM datasets WHERE project_id = ? AND read_only = 0")
+    .all(id);
   const tx = db.transaction(() => {
     for (const d of datasets) {
       if (/^[a-z0-9_]+$/.test(d.table_name)) {
@@ -274,7 +480,7 @@ function bindValue(type, v) {
 // Port of public.insert_dataset_rows_typed()
 function insertDatasetRowsTyped(datasetId, rows) {
   if (!Array.isArray(rows) || rows.length === 0) return 0;
-  const ds = getDatasetOrThrow(datasetId);
+  const ds = getWritableDatasetOrThrow(datasetId);
   const cols = ds.column_schema;
   const colList = cols.map((c) => quoteIdent(c.name)).join(", ");
   const placeholders = cols.map(() => "?").join(", ");
@@ -310,7 +516,7 @@ function insertDatasetRowsTyped(datasetId, rows) {
 }
 
 function replaceDatasetRowsTyped(datasetId, rows) {
-  const ds = getDatasetOrThrow(datasetId);
+  const ds = getWritableDatasetOrThrow(datasetId);
   const cols = ds.column_schema;
   const colList = cols.map((c) => quoteIdent(c.name)).join(", ");
   const placeholders = cols.map(() => "?").join(", ");
@@ -345,7 +551,7 @@ function replaceDatasetRowsTyped(datasetId, rows) {
 
 // Port of public.drop_project_dataset()
 function dropProjectDataset(datasetId) {
-  const ds = getDatasetOrThrow(datasetId);
+  const ds = getWritableDatasetOrThrow(datasetId);
   const projectId = ds.project_id;
   const tx = db.transaction(() => {
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(ds.table_name)}`);
@@ -368,7 +574,7 @@ function dropProjectDataset(datasetId) {
 
 // Port of public.truncate_dataset()
 function truncateDataset(datasetId) {
-  const ds = getDatasetOrThrow(datasetId);
+  const ds = getWritableDatasetOrThrow(datasetId);
   const tx = db.transaction(() => {
     db.exec(`DELETE FROM ${quoteIdent(ds.table_name)}`);
     // Reset the AUTOINCREMENT counter (TRUNCATE ... RESTART IDENTITY equivalent)
@@ -380,7 +586,7 @@ function truncateDataset(datasetId) {
 
 // Port of public.add_dataset_column()
 function addDatasetColumn(datasetId, columnName, columnType) {
-  const ds = getDatasetOrThrow(datasetId);
+  const ds = getWritableDatasetOrThrow(datasetId);
   const clean = sanitizeIdent(columnName);
   const type = SQLITE_TYPE[columnType] ? columnType : "text";
   if (ds.column_schema.some((c) => c.name === clean)) {
@@ -440,10 +646,17 @@ function runProjectQuery(projectId, sql, limit = 500) {
     .map((r) => r.table_name);
   const clean = prepareProjectSelect(sql, allowedTables);
 
-  const stmt = db.prepare(`SELECT * FROM (${clean}) LIMIT ${lim}`);
-  const rows = stmt.all();
-  const columns = stmt.columns().map((c) => c.name);
-  return { rows, columns };
+  // Defence in depth behind the SELECT guard: query_only makes SQLite reject
+  // any write for the duration, including writes to attached source databases.
+  db.pragma("query_only = ON");
+  try {
+    const stmt = db.prepare(`SELECT * FROM (${clean}) LIMIT ${lim}`);
+    const rows = stmt.all();
+    const columns = stmt.columns().map((c) => c.name);
+    return { rows, columns };
+  } finally {
+    db.pragma("query_only = OFF");
+  }
 }
 
 // ---------- saved queries ----------
@@ -517,4 +730,7 @@ module.exports = {
   insertSavedQuery,
   listExportHistory,
   insertExportHistory,
+  attachSource,
+  listAttachedSources,
+  detachSource,
 };

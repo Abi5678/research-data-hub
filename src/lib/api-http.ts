@@ -7,6 +7,9 @@ import type {
 
 const base = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
+const ATTACH_UNAVAILABLE =
+  "Attaching an existing database is only available in the desktop app, which can reach your local files.";
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     ...init,
@@ -122,6 +125,17 @@ export const httpApi: LocalApi = {
     throw new Error("Folder import is only available in the desktop app.");
   },
   onImportProgress: () => () => {},
+  pickDatabaseFile: async () => {
+    throw new Error(ATTACH_UNAVAILABLE);
+  },
+  attachSource: async () => {
+    throw new Error(ATTACH_UNAVAILABLE);
+  },
+  // Nothing can be attached in server mode, so the list is simply empty.
+  listAttachedSources: async () => [],
+  detachSource: async () => {
+    throw new Error(ATTACH_UNAVAILABLE);
+  },
 };
 
 export type AuthUser = { id: string; email: string; global_role: "admin" | "user" };
