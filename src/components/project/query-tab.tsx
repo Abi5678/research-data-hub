@@ -43,6 +43,8 @@ import {
   Wand2,
   Clipboard,
   Sliders,
+  BookOpen,
+  Lightbulb,
 } from "lucide-react";
 import {
   Popover,
@@ -50,11 +52,18 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import type { ColumnSchema } from "@/lib/csv";
-import { exportRows } from "@/lib/export";
+import { exportRows, EXPORT_FORMATS, type ExportFormat } from "@/lib/export";
 import { toCsv } from "@/lib/csv";
 import { ResultsTable } from "@/components/project/results-table";
 import type { ExampleQuery } from "@/lib/templates";
-import { BookOpen, Lightbulb } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 type Dataset = {
   id: string;
@@ -893,7 +902,7 @@ function QueryRunner({
   });
 
   const exportCsv = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (format: ExportFormat) => {
       if (!sql.trim()) throw new Error("Nothing to export");
       const full = await api.runProjectQuery(projectId, sql, QUERY_FETCH_LIMIT);
       const cols =
@@ -906,11 +915,12 @@ function QueryRunner({
         rows: full.rows,
         columns: cols,
         label: queryLabel ?? null,
+        format,
       });
-      return full.rows.length;
+      return { n: full.rows.length, format };
     },
-    onSuccess: (n) => {
-      toast.success(`Exported ${n.toLocaleString()} rows`);
+    onSuccess: ({ n, format }) => {
+      toast.success(`Exported ${n.toLocaleString()} rows as ${format.toUpperCase()}`);
       qc.invalidateQueries({ queryKey: ["exports", projectId] });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed"),
@@ -993,14 +1003,35 @@ function QueryRunner({
             </PopoverContent>
           </Popover>
         )}
-        <Button
-          variant="outline"
-          onClick={() => exportCsv.mutate()}
-          disabled={!results || exportCsv.isPending}
-          className="gap-1.5"
-        >
-          <Download className="h-3.5 w-3.5" /> Download CSV
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              disabled={!results || exportCsv.isPending}
+              className="gap-1.5"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {exportCsv.isPending ? "Exporting…" : "Download"}
+              <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+              Export query results
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {EXPORT_FORMATS.map((f) => (
+              <DropdownMenuItem
+                key={f.id}
+                className="flex flex-col items-start gap-0.5"
+                onClick={() => exportCsv.mutate(f.id)}
+              >
+                <span className="text-xs font-semibold">{f.label}</span>
+                <span className="text-[10px] text-muted-foreground">{f.hint}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
         {results && results.rows.length > 0 && results.rows.length < 1000 && (
           <Button
             variant="ghost"

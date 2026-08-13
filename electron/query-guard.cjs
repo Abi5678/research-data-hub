@@ -32,6 +32,7 @@ const FORBIDDEN_TABLES = new Set([
   "projects",
   "datasets",
   "saved_queries",
+  "analysis_views",
   "export_history",
   "sqlite_master",
   "sqlite_schema",

@@ -564,6 +564,35 @@ export class DataStore {
     );
   }
 
+  async listAnalysisViews(user: AuthUser, projectId: string) {
+    if (!(await this.userCanAccessProject(user, projectId, "read"))) throw new Error("Forbidden");
+    const r = await this.pool.query(
+      "SELECT id, project_id, name, spec, created_at, updated_at FROM analysis_views WHERE project_id = $1 ORDER BY updated_at DESC",
+      [projectId],
+    );
+    return r.rows;
+  }
+
+  async insertAnalysisView(user: AuthUser, projectId: string, name: string, spec: unknown) {
+    if (!(await this.userCanAccessProject(user, projectId, "write"))) throw new Error("Forbidden");
+    const t = now();
+    const id = uuid();
+    await this.pool.query(
+      `INSERT INTO analysis_views (id, project_id, name, spec, created_at, updated_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$5)`,
+      [id, projectId, String(name || "").trim(), JSON.stringify(spec ?? {}), t],
+    );
+    return { id };
+  }
+
+  async deleteAnalysisView(user: AuthUser, projectId: string, id: string) {
+    if (!(await this.userCanAccessProject(user, projectId, "write"))) throw new Error("Forbidden");
+    await this.pool.query("DELETE FROM analysis_views WHERE id = $1 AND project_id = $2", [
+      id,
+      projectId,
+    ]);
+  }
+
   async listExportHistory(user: AuthUser, projectId: string, limit = 50) {
     if (!(await this.userCanAccessProject(user, projectId, "read"))) throw new Error("Forbidden");
     const lim = Math.min(Math.max(Number(limit) || 50, 1), 500);
@@ -599,6 +628,222 @@ export class DataStore {
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [key, value],
     );
+  }
+
+  async insertImportHistory(args: {
+    projectId: string;
+    folderPath?: string | null;
+    mode?: string;
+    report: Record<string, unknown>;
+    createdBy?: string | null;
+  }) {
+    const id = uuid();
+    await this.pool.query(
+      `INSERT INTO import_history (id, project_id, folder_path, mode, report, created_by, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        id,
+        args.projectId,
+        args.folderPath ?? null,
+        args.mode ?? "deterministic",
+        JSON.stringify(args.report),
+        args.createdBy ?? null,
+        now(),
+      ],
+    );
+    return id;
+  }
+
+  async listImportHistory(user: AuthUser, projectId: string, limit = 50) {
+    if (!(await this.userCanAccessProject(user, projectId, "read"))) throw new Error("Forbidden");
+    const lim = Math.min(Math.max(Number(limit) || 50, 1), 500);
+    const r = await this.pool.query(
+      `SELECT * FROM import_history WHERE project_id = $1 ORDER BY created_at DESC LIMIT ${lim}`,
+      [projectId],
+    );
+    return r.rows;
+  }
+
+  async importFolderJob(
+    user: AuthUser,
+    args: {
+      projectId?: string;
+      projectInput?: Parameters<DataStore["createProject"]>[1];
+      tables: Array<{
+        displayName: string;
+        sourceFilename: string;
+        columns: { name: string; original_name: string; type: string }[];
+        rows: Record<string, string | null>[];
+      }>;
+    },
+  ) {
+    let projectId = args.projectId;
+    let createdProject = false;
+    const client = await this.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      if (!projectId) {
+        if (!args.projectInput) throw new Error("projectId or projectInput is required");
+        const id = uuid();
+        const t = now();
+        const inp = args.projectInput;
+        await client.query(
+          `INSERT INTO projects (id, project_code, project_name, sponsor, pi_name, start_date, end_date, description, template_key, template_meta, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'{}',$10,$10)`,
+          [
+            id,
+            inp.project_code,
+            inp.project_name,
+            inp.sponsor ?? null,
+            inp.pi_name ?? null,
+            inp.start_date ?? null,
+            inp.end_date ?? null,
+            inp.description ?? null,
+            inp.template_key ?? null,
+            t,
+          ],
+        );
+        await client.query(
+          "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'editor')",
+          [id, user.id],
+        );
+        projectId = id;
+        createdProject = true;
+      }
+
+      const pr = await client.query("SELECT project_code FROM projects WHERE id = $1", [projectId]);
+      if (!pr.rows[0]) throw new Error("Project not found");
+      const projectCode = pr.rows[0].project_code as string;
+
+      const results: { display_name: string; inserted: number; invalid: number }[] = [];
+
+      for (const table of args.tables) {
+        if (!table.columns.length) {
+          results.push({ display_name: table.displayName, inserted: 0, invalid: 0 });
+          continue;
+        }
+
+        let base =
+          `ds_${sanitizeIdent(projectCode)}_${sanitizeIdent(table.displayName)}`.slice(0, 55);
+        let tableName = base;
+        let n = 0;
+        while (true) {
+          const ex = await client.query("SELECT 1 FROM datasets WHERE table_name = $1", [tableName]);
+          if (ex.rowCount === 0) break;
+          n += 1;
+          const suffix = `_${n}`;
+          tableName = base.slice(0, 55 - suffix.length) + suffix;
+        }
+
+        const seen = new Set<string>();
+        const colDefs: string[] = [];
+        const cleanCols: { name: string; original_name: string; type: ColumnKind }[] = [];
+        for (const col of table.columns) {
+          let name = sanitizeIdent(col.name);
+          if (name === "row_id") name = "row_id_2";
+          if (seen.has(name)) {
+            let k = 2;
+            while (seen.has(`${name}_${k}`)) k += 1;
+            name = `${name}_${k}`;
+          }
+          seen.add(name);
+          const type = PG_TYPE[col.type] ? col.type : "text";
+          colDefs.push(`${quoteIdent(name)} ${PG_TYPE[type]}`);
+          cleanCols.push({ name, original_name: col.original_name ?? col.name, type: type as ColumnKind });
+        }
+
+        const dsId = uuid();
+        await client.query(
+          `CREATE TABLE ${quoteIdent(tableName)} (row_id SERIAL PRIMARY KEY, ${colDefs.join(", ")})`,
+        );
+        await client.query(
+          `INSERT INTO datasets (id, project_id, table_name, display_name, source_filename, row_count, column_schema, created_at)
+           VALUES ($1,$2,$3,$4,$5,0,$6,$7)`,
+          [dsId, projectId, tableName, table.displayName, table.sourceFilename, JSON.stringify(cleanCols), now()],
+        );
+
+        const colList = cleanCols.map((c) => quoteIdent(c.name)).join(", ");
+        const placeholders = cleanCols.map((_, i) => `$${i + 1}`).join(", ");
+        const insertSql = `INSERT INTO ${quoteIdent(tableName)} (${colList}) VALUES (${placeholders})`;
+
+        let inserted = 0;
+        let invalid = 0;
+        for (const row of table.rows) {
+          try {
+            let norm: Record<string, string | null> | null = null;
+            const values = cleanCols.map((c) => {
+              let v = row[c.name];
+              if (v === undefined) {
+                if (!norm) {
+                  norm = {};
+                  for (const k of Object.keys(row)) norm[sanitizeIdent(k)] = row[k];
+                }
+                v = norm[c.name];
+              }
+              return this.bindValue(c.type, v);
+            });
+            await client.query(insertSql, values);
+            inserted += 1;
+          } catch {
+            invalid += 1;
+          }
+        }
+
+        await client.query("UPDATE datasets SET row_count = $1 WHERE id = $2", [inserted, dsId]);
+        results.push({ display_name: table.displayName, inserted, invalid });
+      }
+
+      const totalInserted = results.reduce((s, r) => s + r.inserted, 0);
+      const totalInvalid = results.reduce((s, r) => s + r.invalid, 0);
+      await client.query(
+        `INSERT INTO import_history (id, project_id, folder_path, mode, report, created_by, created_at)
+         VALUES ($1,$2,$3,'deterministic',$4,$5,$6)`,
+        [
+          uuid(),
+          projectId,
+          null,
+          JSON.stringify({
+            mode: "deterministic",
+            results,
+            totals: {
+              tables: results.length,
+              inserted: totalInserted,
+              invalid: totalInvalid,
+              skippedSources: 0,
+            },
+          }),
+          user.id,
+          now(),
+        ],
+      );
+
+      await client.query("COMMIT");
+      return {
+        projectId,
+        results: results.map((r, i) => ({
+          key: `t_${i}`,
+          display_name: r.display_name,
+          inserted: r.inserted,
+          invalid: r.invalid,
+        })),
+        report: {
+          mode: "deterministic",
+          totals: {
+            tables: results.length,
+            inserted: totalInserted,
+            invalid: totalInvalid,
+            skippedSources: 0,
+          },
+        },
+      };
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   async addProjectMember(

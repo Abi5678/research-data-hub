@@ -11,6 +11,7 @@ const Database = require("better-sqlite3");
 const { prepareProjectSelect } = require("./query-guard.cjs");
 
 let db = null;
+let dbFilePath = null;
 
 const SQLITE_TYPE = {
   integer: "INTEGER",
@@ -45,6 +46,7 @@ function quoteIdent(s) {
 function open(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
+  dbFilePath = dbPath;
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(`
@@ -102,6 +104,24 @@ function open(dbPath) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_attached_project_id ON attached_sources(project_id);
+    CREATE TABLE IF NOT EXISTS import_history (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      folder_path TEXT,
+      mode TEXT NOT NULL DEFAULT 'deterministic',
+      report TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_import_history_project ON import_history(project_id);
+    CREATE TABLE IF NOT EXISTS analysis_views (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      spec TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_analysis_views_project ON analysis_views(project_id);
   `);
   // Datasets backed by an attached database are query-only.
   const hasReadOnly = db
@@ -676,6 +696,33 @@ function insertSavedQuery(projectId, name, sqlText) {
   ).run(uuid(), projectId, name, sqlText, t, t);
 }
 
+// ---------- analysis views ----------
+
+function listAnalysisViews(projectId) {
+  return db
+    .prepare(
+      "SELECT id, project_id, name, spec, created_at, updated_at FROM analysis_views WHERE project_id = ? ORDER BY updated_at DESC",
+    )
+    .all(projectId)
+    .map((row) => ({
+      ...row,
+      spec: JSON.parse(row.spec || "{}"),
+    }));
+}
+
+function insertAnalysisView(projectId, name, spec) {
+  const t = now();
+  const id = uuid();
+  db.prepare(
+    "INSERT INTO analysis_views (id, project_id, name, spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, projectId, String(name || "").trim(), JSON.stringify(spec ?? {}), t, t);
+  return { id };
+}
+
+function deleteAnalysisView(projectId, id) {
+  db.prepare("DELETE FROM analysis_views WHERE id = ? AND project_id = ?").run(id, projectId);
+}
+
 // ---------- settings ----------
 
 function getSetting(key) {
@@ -706,6 +753,64 @@ function insertExportHistory({ projectId, filename, rowCount, queryId }) {
   ).run(uuid(), projectId, queryId ?? null, filename, rowCount, now());
 }
 
+// ---------- import history ----------
+
+function listImportHistory(projectId, limit = 50) {
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  return db
+    .prepare(
+      `SELECT * FROM import_history WHERE project_id = ? ORDER BY created_at DESC LIMIT ${lim}`,
+    )
+    .all(projectId)
+    .map((row) => ({
+      ...row,
+      report: JSON.parse(row.report || "{}"),
+    }));
+}
+
+function insertImportHistory({ projectId, folderPath, mode, report }) {
+  const id = uuid();
+  db.prepare(
+    "INSERT INTO import_history (id, project_id, folder_path, mode, report, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(id, projectId, folderPath ?? null, mode || "deterministic", JSON.stringify(report ?? {}), now());
+  return id;
+}
+
+// ---------- backup / restore ----------
+
+function getDatabasePath() {
+  return dbFilePath;
+}
+
+function backupDatabase(destPath) {
+  if (!db || !dbFilePath) throw new Error("Database not open");
+  if (!destPath) throw new Error("Backup destination required");
+  // better-sqlite3 backup() returns a Backup object that must be stepped/run.
+  // Use VACUUM INTO for a simple consistent snapshot (SQLite ≥ 3.27).
+  db.exec(`VACUUM INTO '${String(destPath).replace(/'/g, "''")}'`);
+  return destPath;
+}
+
+function restoreDatabase(srcPath) {
+  if (!srcPath || !fs.existsSync(srcPath)) throw new Error("Backup file not found");
+  if (!dbFilePath) throw new Error("Database path unknown");
+  const target = dbFilePath;
+  try {
+    db.close();
+  } catch {
+    /* ignore */
+  }
+  db = null;
+  fs.copyFileSync(srcPath, target);
+  // Also remove WAL/SHM so restore is clean
+  for (const suffix of ["-wal", "-shm"]) {
+    const p = target + suffix;
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
+  open(target);
+  return target;
+}
+
 module.exports = {
   open,
   getSetting,
@@ -728,9 +833,17 @@ module.exports = {
   runProjectQuery,
   listSavedQueries,
   insertSavedQuery,
+  listAnalysisViews,
+  insertAnalysisView,
+  deleteAnalysisView,
   listExportHistory,
   insertExportHistory,
+  listImportHistory,
+  insertImportHistory,
   attachSource,
   listAttachedSources,
   detachSource,
+  getDatabasePath,
+  backupDatabase,
+  restoreDatabase,
 };

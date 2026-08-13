@@ -1,0 +1,4 @@
+sample_id,test_name,result_value,units
+S-001,TSR,0.82,ratio
+S-002,TSR,0.79,ratio
+S-001,APA,3.2,mm

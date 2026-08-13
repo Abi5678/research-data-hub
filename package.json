@@ -19,7 +19,12 @@
     "electron:build": "vite build && electron-builder --mac",
     "dev:server-web": "VITE_SERVER_MODE=1 vite dev --host 127.0.0.1 --port 5173",
     "server:dev": "npm run dev --prefix server",
-    "server:build": "npm run build --prefix server"
+    "server:build": "npm run build --prefix server",
+    "test": "npm rebuild better-sqlite3 --silent && vitest run && npx electron-rebuild -f -w better-sqlite3",
+    "test:watch": "vitest",
+    "test:unit": "npm rebuild better-sqlite3 --silent && vitest run",
+    "test:e2e": "npm rebuild better-sqlite3 --silent && node scripts/e2e-smoke.mjs",
+    "electron:build:win": "vite build && electron-builder --win --x64"
   },
   "dependencies": {
     "@codemirror/lang-sql": "^6.10.0",
@@ -64,6 +69,9 @@
     "embla-carousel-react": "^8.6.0",
     "exceljs": "^4.4.0",
     "input-otp": "^1.4.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.575.0",
     "papaparse": "^5.5.4",
     "react": "^19.2.0",
@@ -100,6 +108,7 @@
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.0.16",
+    "vitest": "^3.2.7",
     "wait-on": "^8.0.2"
   },
   "build": {
@@ -118,6 +127,28 @@
         "dir"
       ],
       "category": "public.app-category.developer-tools"
+    },
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Research Data Hub"
     }
   }
 }

@@ -36,13 +36,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import {
-  coerceRow,
-  parseCsv,
-  type ColumnKind,
-  type ColumnSchema,
-  type ParsedCsv,
-} from "@/lib/csv";
+import { coerceRow, parseCsv, type ColumnKind, type ColumnSchema, type ParsedCsv } from "@/lib/csv";
 import type { ProjectTemplate, TemplateTable } from "@/lib/templates";
 import { isSpreadsheetFile, isXlsxFile, parseXlsx, type XlsxSheet } from "@/lib/xlsx";
 
@@ -92,7 +86,10 @@ type Report = {
 };
 
 function norm(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
 }
 
 /** Score column-name overlap between CSV and a template table. */
@@ -178,7 +175,9 @@ export function MappedDatasetUploadDialog({
       const scored = template.tables
         .map((t) => ({ t, score: overlapScore(csvCols, t) }))
         .sort((a, b) => b.score - a.score);
-      const bestKey = initialTableKey ?? (scored[0] && scored[0].score > 0 ? scored[0].t.key : template.tables[0]!.key);
+      const bestKey =
+        initialTableKey ??
+        (scored[0] && scored[0].score > 0 ? scored[0].t.key : template.tables[0]!.key);
       setTableKey(bestKey);
       const defaultMode: Mode = bindings[bestKey] ? "append" : "create";
       setMode(defaultMode);
@@ -353,6 +352,7 @@ export function MappedDatasetUploadDialog({
 
       let datasetId: string | undefined = boundDatasetId;
       let created = false;
+      let inserted = 0;
 
       // 1) Create the dataset table if needed
       if (mode === "create") {
@@ -396,7 +396,6 @@ export function MappedDatasetUploadDialog({
       // 2) Insert rows in chunks (append)
       const CHUNK = 1000;
       const rows = report.ok;
-      let inserted = 0;
       for (let i = 0; i < rows.length; i += CHUNK) {
         const chunk = rows.slice(i, i + CHUNK);
         setProgressMsg(
@@ -445,178 +444,178 @@ export function MappedDatasetUploadDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-w-4xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] max-w-4xl flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Upload CSV with mapping</DialogTitle>
           <DialogDescription>
-            Map CSV columns to the template schema, validate foreign keys, and
-            choose append vs replace before importing.
+            Map CSV columns to the template schema, validate foreign keys, and choose append vs
+            replace before importing.
           </DialogDescription>
         </DialogHeader>
 
-        {stage === "pick" && (
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              const f = e.dataTransfer.files?.[0];
-              if (f) void handleFile(f);
-            }}
-            className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
-              dragging ? "border-primary bg-primary/5" : "border-border bg-secondary/40"
-            }`}
-          >
-            <div className="rounded-full bg-white p-3 shadow-card">
-              <Upload className="h-6 w-6 text-primary" />
-            </div>
-            <div className="text-sm font-semibold text-foreground">
-              Drag a .csv or .xlsx file here
-            </div>
-            <div className="text-xs text-muted-foreground">or</div>
-            <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>
-              <Plus className="h-3.5 w-3.5" /> Choose file
-            </Button>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {stage === "pick" && (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                const f = e.dataTransfer.files?.[0];
                 if (f) void handleFile(f);
               }}
-            />
-            <p className="text-[11px] text-muted-foreground">.csv, .xlsx, .xls • max 50MB</p>
-          </div>
-        )}
+              className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
+                dragging ? "border-primary bg-primary/5" : "border-border bg-secondary/40"
+              }`}
+            >
+              <div className="rounded-full bg-white p-3 shadow-card">
+                <Upload className="h-6 w-6 text-primary" />
+              </div>
+              <div className="text-sm font-semibold text-foreground">
+                Drag a .csv or .xlsx file here
+              </div>
+              <div className="text-xs text-muted-foreground">or</div>
+              <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>
+                <Plus className="h-3.5 w-3.5" /> Choose file
+              </Button>
+              <input
+                ref={inputRef}
+                type="file"
+                accept=".csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleFile(f);
+                }}
+              />
+              <p className="text-[11px] text-muted-foreground">.csv, .xlsx, .xls • max 50MB</p>
+            </div>
+          )}
 
-        {stage === "sheet" && sheets && file && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <FileText className="h-3.5 w-3.5" />
-              <span className="font-semibold text-foreground">{file.name}</span>
-              <span>•</span>
-              <span>{sheets.length} sheets with data</span>
-            </div>
-            <div className="text-xs font-semibold text-foreground">
-              Which sheet should be mapped to {templateTable.display_name}?
-            </div>
-            <div className="max-h-72 space-y-2 overflow-auto">
-              {sheets.map((s) => (
-                <button
-                  key={s.name}
-                  type="button"
-                  onClick={() => openSheet(s)}
-                  className="flex w-full items-center justify-between rounded-xl border border-border/70 bg-card p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
-                >
-                  <div>
-                    <div className="text-sm font-semibold text-foreground">{s.name}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {s.parsed.rows.length.toLocaleString()} rows • {s.parsed.columns.length}{" "}
-                      columns
+          {stage === "sheet" && sheets && file && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <FileText className="h-3.5 w-3.5" />
+                <span className="font-semibold text-foreground">{file.name}</span>
+                <span>•</span>
+                <span>{sheets.length} sheets with data</span>
+              </div>
+              <div className="text-xs font-semibold text-foreground">
+                Which sheet should be mapped to {templateTable.display_name}?
+              </div>
+              <div className="max-h-72 space-y-2 overflow-auto">
+                {sheets.map((s) => (
+                  <button
+                    key={s.name}
+                    type="button"
+                    onClick={() => openSheet(s)}
+                    className="flex w-full items-center justify-between rounded-xl border border-border/70 bg-card p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">{s.name}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {s.parsed.rows.length.toLocaleString()} rows • {s.parsed.columns.length}{" "}
+                        columns
+                      </div>
                     </div>
-                  </div>
-                  <Plus className="h-3.5 w-3.5 text-muted-foreground" />
-                </button>
-              ))}
+                    <Plus className="h-3.5 w-3.5 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
-
-        {stage === "configure" && parsed && (
-          <ConfigureStage
-            parsed={parsed}
-            fileName={file?.name ?? ""}
-            template={template}
-            tableKey={tableKey}
-            onChangeTable={changeTable}
-            mode={mode}
-            setMode={setMode}
-            boundDataset={boundDataset}
-            displayName={displayName}
-            setDisplayName={setDisplayName}
-            mappings={mappings}
-            setMappings={setMappings}
-            uniqueKeys={uniqueKeys}
-            setUniqueKeys={setUniqueKeys}
-            bindings={bindings}
-            datasets={datasets}
-          />
-        )}
-
-        {stage === "validating" && (
-          <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />
-            {progressMsg || "Validating…"}
-          </div>
-        )}
-
-        {stage === "report" && report && (
-          <ReportStage
-            report={report}
-            totalParsed={parsed?.rows.length ?? 0}
-            includeOrphans={includeOrphans}
-            setIncludeOrphans={(v) => {
-              setIncludeOrphans(v);
-              validate.mutate();
-            }}
-            includeDuplicates={includeDuplicates}
-            setIncludeDuplicates={(v) => {
-              setIncludeDuplicates(v);
-              validate.mutate();
-            }}
-            uniqueKeysCount={uniqueKeys.length}
-          />
-        )}
-
-        {stage === "uploading" && (
-          <div className="space-y-3 py-4">
-            <div className="text-sm font-semibold text-foreground">Importing…</div>
-            <Progress value={progress} />
-            <div className="text-xs text-muted-foreground">{progressMsg}</div>
-          </div>
-        )}
-
-        <DialogFooter>
-          {stage === "configure" && (
-            <>
-              <Button variant="ghost" onClick={reset} className="gap-1">
-                <X className="h-3.5 w-3.5" /> Choose different file
-              </Button>
-              <Button
-                onClick={() => validate.mutate()}
-                disabled={validate.isPending}
-                className="gap-1"
-              >
-                Validate <ArrowRight className="h-3.5 w-3.5" />
-              </Button>
-            </>
           )}
+
+          {stage === "configure" && parsed && (
+            <ConfigureStage
+              parsed={parsed}
+              fileName={file?.name ?? ""}
+              template={template}
+              tableKey={tableKey}
+              onChangeTable={changeTable}
+              mode={mode}
+              setMode={setMode}
+              boundDataset={boundDataset}
+              displayName={displayName}
+              setDisplayName={setDisplayName}
+              mappings={mappings}
+              setMappings={setMappings}
+              uniqueKeys={uniqueKeys}
+              setUniqueKeys={setUniqueKeys}
+              bindings={bindings}
+              datasets={datasets}
+            />
+          )}
+
+          {stage === "validating" && (
+            <div className="flex items-center gap-3 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              {progressMsg || "Validating…"}
+            </div>
+          )}
+
           {stage === "report" && report && (
-            <>
-              <Button
-                variant="ghost"
-                onClick={() => setStage("configure")}
-                className="gap-1"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" /> Back to mapping
-              </Button>
-              <Button
-                onClick={() => runImport.mutate()}
-                disabled={runImport.isPending || report.ok.length === 0}
-                className="gap-1"
-              >
-                Import {report.ok.length.toLocaleString()} row
-                {report.ok.length === 1 ? "" : "s"}
-              </Button>
-            </>
+            <ReportStage
+              report={report}
+              totalParsed={parsed?.rows.length ?? 0}
+              includeOrphans={includeOrphans}
+              setIncludeOrphans={(v) => {
+                setIncludeOrphans(v);
+                validate.mutate();
+              }}
+              includeDuplicates={includeDuplicates}
+              setIncludeDuplicates={(v) => {
+                setIncludeDuplicates(v);
+                validate.mutate();
+              }}
+              uniqueKeysCount={uniqueKeys.length}
+            />
           )}
-        </DialogFooter>
+
+          {stage === "uploading" && (
+            <div className="space-y-3 py-4">
+              <div className="text-sm font-semibold text-foreground">Importing…</div>
+              <Progress value={progress} />
+              <div className="text-xs text-muted-foreground">{progressMsg}</div>
+            </div>
+          )}
+        </div>
+
+        {(stage === "configure" || stage === "report") && (
+          <DialogFooter>
+            {stage === "configure" && (
+              <>
+                <Button variant="ghost" onClick={reset} className="gap-1">
+                  <X className="h-3.5 w-3.5" /> Choose different file
+                </Button>
+                <Button
+                  onClick={() => validate.mutate()}
+                  disabled={validate.isPending}
+                  className="gap-1"
+                >
+                  Validate <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            )}
+            {stage === "report" && report && (
+              <>
+                <Button variant="ghost" onClick={() => setStage("configure")} className="gap-1">
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back to mapping
+                </Button>
+                <Button
+                  onClick={() => runImport.mutate()}
+                  disabled={runImport.isPending || report.ok.length === 0}
+                  className="gap-1"
+                >
+                  Import {report.ok.length.toLocaleString()} row
+                  {report.ok.length === 1 ? "" : "s"}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -748,7 +747,9 @@ function ConfigureStage({
                   <SelectItem key={t.key} value={t.key}>
                     <span className="font-mono">{t.key}</span>
                     {s > 0 && (
-                      <span className="ml-2 text-[10px] text-muted-foreground">{s} match{s === 1 ? "" : "es"}</span>
+                      <span className="ml-2 text-[10px] text-muted-foreground">
+                        {s} match{s === 1 ? "" : "es"}
+                      </span>
                     )}
                   </SelectItem>
                 );
@@ -787,7 +788,9 @@ function ConfigureStage({
 
       {mode === "create" && (
         <div>
-          <Label htmlFor="ds-name" className="text-xs">Display name</Label>
+          <Label htmlFor="ds-name" className="text-xs">
+            Display name
+          </Label>
           <Input
             id="ds-name"
             value={displayName}
@@ -800,9 +803,9 @@ function ConfigureStage({
         <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-gradient-primary-soft px-3 py-2 text-[11px]">
           <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
           <span>
-            Target dataset <span className="font-semibold">{boundDataset.display_name}</span>
-            {" "}has {boundDataset.row_count.toLocaleString()} rows and{" "}
-            {boundDataset.column_schema.length} columns.
+            Target dataset <span className="font-semibold">{boundDataset.display_name}</span> has{" "}
+            {boundDataset.row_count.toLocaleString()} rows and {boundDataset.column_schema.length}{" "}
+            columns.
           </span>
         </div>
       )}
@@ -853,7 +856,7 @@ function ConfigureStage({
                                         ? undefined
                                         : v === "new"
                                           ? mm.csv
-                                          : mm.targetName ?? availableTargets[0]?.name,
+                                          : (mm.targetName ?? availableTargets[0]?.name),
                                     newType: v === "new" ? (mm.newType ?? "text") : mm.newType,
                                   }
                                 : mm,
@@ -877,9 +880,7 @@ function ConfigureStage({
                           value={m.targetName ?? ""}
                           onValueChange={(v) =>
                             setMappings((arr) =>
-                              arr.map((mm, j) =>
-                                j === i ? { ...mm, targetName: v } : mm,
-                              ),
+                              arr.map((mm, j) => (j === i ? { ...mm, targetName: v } : mm)),
                             )
                           }
                         >
@@ -1093,7 +1094,9 @@ function ReportStage({
           </summary>
           <ul className="mt-2 max-h-32 space-y-0.5 overflow-auto">
             {report.invalid.slice(0, 20).map((o, i) => (
-              <li key={i}>Line {o.line}: {o.reason}</li>
+              <li key={i}>
+                Line {o.line}: {o.reason}
+              </li>
             ))}
             {report.invalid.length > 20 && <li>…and {report.invalid.length - 20} more</li>}
           </ul>
@@ -1108,7 +1111,9 @@ function ReportStage({
           </summary>
           <ul className="mt-2 max-h-32 space-y-0.5 overflow-auto">
             {report.duplicate.slice(0, 20).map((o, i) => (
-              <li key={i}>Line {o.line}: key "{o.key.replace(/\u241f/g, " + ")}"</li>
+              <li key={i}>
+                Line {o.line}: key "{o.key.replace(/\u241f/g, " + ")}"
+              </li>
             ))}
             {report.duplicate.length > 20 && <li>…and {report.duplicate.length - 20} more</li>}
           </ul>
@@ -1125,15 +1130,7 @@ function ReportStage({
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: "ok" | "warn";
-}) {
+function Stat({ label, value, tone }: { label: string; value: number; tone: "ok" | "warn" }) {
   return (
     <div
       className={`rounded-xl border p-3 ${
@@ -1147,9 +1144,7 @@ function Stat({
       <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
-      <div className="mt-0.5 text-lg font-extrabold text-foreground">
-        {value.toLocaleString()}
-      </div>
+      <div className="mt-0.5 text-lg font-extrabold text-foreground">{value.toLocaleString()}</div>
     </div>
   );
 }

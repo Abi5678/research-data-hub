@@ -1,32 +1,39 @@
-# NVIDIA NIM — AI folder import
+# AI schema assist (optional)
 
-Research Data Hub uses **NVIDIA NIM** (OpenAI-compatible chat) for **Create project from folder**: column headers and a few sample rows are sent to the cloud so Nemotron can propose a relational schema.
+Folder import is **deterministic by default** (one table per file/sheet). No API key is required.
 
-## Default model
+## NHDOT production policy
 
-- **Primary:** `nvidia/llama-3.3-nemotron-super-49b-instruct`
-- Configure under **Settings** (desktop) or **admin Settings** (lab server).
-- Use **Test connection** — if the model 404s, pick another **Nemotron Instruct** id from [build.nvidia.com](https://build.nvidia.com).
+- **Cloud NVIDIA NIM is OFF** unless `ALLOW_CLOUD_NIM=1` (do not enable for NHDOT production).
+- Profiles and sample rows must not leave the NHDOT network via cloud APIs.
+- Optional assist: set `LLM_BASE_URL` (or Settings → Local LLM base URL) to an on-prem OpenAI-compatible endpoint.
 
-## What is sent to NVIDIA
+## Desktop
 
-- File paths (relative to the folder you picked)
-- Sheet names
+1. **Import research folder** — works offline.
+2. If a local LLM is configured, optionally check **Improve schema with AI**.
+3. If AI fails or is unavailable, the app falls back to the deterministic plan.
+
+## What would be sent to an LLM (when enabled)
+
+- Relative file paths, sheet names
 - Column headers and inferred types
-- Up to **5 sample rows** per source (truncated cells)
-- Not sent: full CSV contents, unless they appear in those sample rows
+- Up to **20 sample rows** per source (truncated cells)
+- Not sent: full file contents beyond those samples
 
-## What is not used (v1)
+## Scan limits
 
-- NVIDIA Agent Toolkit / AIQ multi-agent flows
-- Local Triton / on-GPU NIM (optional future work for air-gapped labs)
+| Setting | Default | Env override |
+|---------|---------|--------------|
+| Folder depth | 12 | `IMPORT_MAX_DEPTH` |
+| Sources (file/sheet) | 120 | `IMPORT_MAX_SOURCES` |
+| Max file size | 200 MB | `IMPORT_MAX_FILE_BYTES` |
+| Sample rows per source | 20 | `IMPORT_SAMPLE_ROWS` |
+
+**Accepted:** `.csv`, `.tsv`, `.txt`, `.xlsx`, `.xlsm`  
+**Skipped:** legacy `.xls`, PDF/Word/images/archives
 
 ## Lab server
 
-- API keys are stored in Postgres **`settings`** table; only **global admins** can read/update.
-- Keys are **never returned** to the browser after save (masked as `••••••••`).
-- Folder import remains **desktop-only**; browser users upload CSVs per dataset.
-
-## PI / data handling
-
-Before using cloud NIM on sensitive field data, confirm with your sponsor (e.g. NHDOT) that sending **metadata + sample rows** to NVIDIA’s API is acceptable. For stricter control, use desktop-only mode without configuring an API key, or plan a future local-NIM deployment.
+- Browser folder/zip import is always deterministic and uses atomic `POST /api/import/folder-job`.
+- LLM settings are admin-only; cloud remains gated by `ALLOW_CLOUD_NIM`.

@@ -79,14 +79,66 @@ export function buildParsedTable(
   return { columns, rows, meta: { totalRows: rows.length } };
 }
 
-export function parseCsv(text: string): ParsedCsv {
-  const res = Papa.parse<Record<string, string>>(text, {
+export function parseCsv(text: string, delimiter?: string): ParsedCsv {
+  const cleaned = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const delim = delimiter ?? detectDelimiter(cleaned);
+  const res = Papa.parse<Record<string, string>>(cleaned, {
     header: true,
     skipEmptyLines: "greedy",
+    delimiter: delim,
   });
   const rows = (res.data ?? []).filter((r) => r && Object.keys(r).length > 0);
-  const headers = res.meta.fields ?? [];
-  return buildParsedTable(headers, rows);
+  const fields = res.meta.fields ?? [];
+  const seen = new Map<string, number>();
+  const headers = fields.map((h) => {
+    const n = seen.get(h) ?? 0;
+    seen.set(h, n + 1);
+    return n === 0 ? h : `${h}_${n + 1}`;
+  });
+  const mapped =
+    fields.length === headers.length && fields.every((f, i) => f === headers[i])
+      ? rows
+      : rows.map((row) => {
+          const out: Record<string, string> = {};
+          fields.forEach((f, i) => {
+            out[headers[i]] = row[f] ?? "";
+          });
+          return out;
+        });
+  return buildParsedTable(headers, mapped);
+}
+
+function detectDelimiter(text: string): string {
+  const lines = text
+    .slice(0, 8192)
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .slice(0, 8);
+  if (lines.length === 0) return ",";
+  let commas = 0;
+  let tabs = 0;
+  let semis = 0;
+  let pipes = 0;
+  for (const line of lines) {
+    for (const ch of line) {
+      if (ch === ",") commas++;
+      else if (ch === "\t") tabs++;
+      else if (ch === ";") semis++;
+      else if (ch === "|") pipes++;
+    }
+  }
+  if (tabs >= lines.length && tabs >= commas) return "\t";
+  if (semis > commas && semis >= lines.length) return ";";
+  if (pipes > commas && pipes >= lines.length) return "|";
+  return ",";
+}
+
+/** Parse CSV/TSV/TXT by filename extension (auto-detect delimiter for .txt). */
+export function parseTabularText(filename: string, text: string): ParsedCsv {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".tsv")) return parseCsv(text, "\t");
+  if (lower.endsWith(".txt")) return parseCsv(text);
+  return parseCsv(text, ",");
 }
 
 export type CoerceResult =

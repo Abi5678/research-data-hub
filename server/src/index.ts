@@ -10,7 +10,7 @@ import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 import { z } from "zod";
 import { DataStore, type AuthUser } from "./datastore.js";
-import { DEFAULT_MODEL, testLlmConnection } from "./llm.js";
+import { DEFAULT_MODEL, llmChat, testLlmConnection, isAiAssistAvailable, cloudAllowed } from "./llm.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,8 +19,13 @@ const DATABASE_URL = process.env.DATABASE_URL || "postgres://rdh:rdh@127.0.0.1:5
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 14);
 const COOKIE_NAME = "rdh_session";
 
-if (process.env.NODE_ENV === "production" && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) {
-  throw new Error("SESSION_SECRET must be at least 32 characters in production");
+if (
+  process.env.NODE_ENV === "production" &&
+  (!process.env.SESSION_SECRET ||
+    process.env.SESSION_SECRET.length < 32 ||
+    process.env.SESSION_SECRET === "dev-change-me")
+) {
+  throw new Error("SESSION_SECRET must be at least 32 characters and not the default value in production");
 }
 
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -31,9 +36,11 @@ function hashToken(token: string) {
 }
 
 async function runMigrations() {
-  const sqlPath = path.join(__dirname, "..", "migrations", "001_init.sql");
-  const sql = await fs.readFile(sqlPath, "utf8");
-  await store.migrate(sql);
+  const migDir = path.join(__dirname, "..", "migrations");
+  for (const file of ["001_init.sql", "002_import_history.sql"]) {
+    const sql = await fs.readFile(path.join(migDir, file), "utf8");
+    await store.migrate(sql);
+  }
 }
 
 async function bootstrapAdmin() {
@@ -48,6 +55,33 @@ async function bootstrapAdmin() {
   const hash = await bcrypt.hash(password, 12);
   await store.createUser(email, hash, "admin");
   console.log(`Created admin user ${email}`);
+}
+
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX = 20;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  entry.count += 1;
+  return entry.count <= RATE_MAX;
+}
+
+const SETTINGS_ALLOWLIST = new Set([
+  "nvidia_api_key",
+  "nvidia_model",
+  "llm_base_url",
+  "llm_provider",
+]);
+
+function isAllowedSettingKey(key: string): boolean {
+  if (SETTINGS_ALLOWLIST.has(key)) return true;
+  return /^(nvidia_|llm_)/.test(key);
 }
 
 declare module "fastify" {
@@ -144,6 +178,7 @@ const loginSchema = z.object({
 });
 
 app.post("/api/auth/register", async (req, reply) => {
+  if (!checkRateLimit(req.ip)) return reply.code(429).send({ error: "Too many attempts. Try again later." });
   const count = await store.countUsers();
   const allow = process.env.ALLOW_PUBLIC_REGISTER === "1" || count === 0;
   if (!allow) return reply.code(403).send({ error: "Registration disabled" });
@@ -171,6 +206,7 @@ app.post("/api/auth/register", async (req, reply) => {
 });
 
 app.post("/api/auth/login", async (req, reply) => {
+  if (!checkRateLimit(req.ip)) return reply.code(429).send({ error: "Too many attempts. Try again later." });
   const body = loginSchema.parse(req.body);
   const row = await store.getUserByEmail(body.email);
   if (!row || !(await bcrypt.compare(body.password, row.password_hash))) {
@@ -297,6 +333,20 @@ app.post("/api/projects/:id/saved-queries", async (req) => {
   return { ok: true };
 });
 
+app.get("/api/projects/:id/analysis-views", async (req) =>
+  store.listAnalysisViews(u(req), (req.params as { id: string }).id),
+);
+app.post("/api/projects/:id/analysis-views", async (req) => {
+  const { id } = req.params as { id: string };
+  const { name, spec } = req.body as { name: string; spec: unknown };
+  return store.insertAnalysisView(u(req), id, name, spec);
+});
+app.delete("/api/projects/:id/analysis-views/:viewId", async (req) => {
+  const { id, viewId } = req.params as { id: string; viewId: string };
+  await store.deleteAnalysisView(u(req), id, viewId);
+  return { ok: true };
+});
+
 app.get("/api/projects/:id/exports", async (req) => {
   const { id } = req.params as { id: string };
   const limit = Number((req.query as { limit?: string }).limit || 50);
@@ -307,6 +357,37 @@ app.post("/api/projects/:id/exports", async (req) => {
   const body = req.body as { filename: string; rowCount: number; queryId?: string | null };
   await store.insertExportHistory(u(req), { projectId: id, ...body });
   return { ok: true };
+});
+
+app.post("/api/import/folder-job", async (req, reply) => {
+  const user = u(req);
+  const body = req.body as {
+    projectId?: string;
+    projectInput?: Parameters<DataStore["createProject"]>[1];
+    tables: Array<{
+      displayName: string;
+      sourceFilename: string;
+      columns: { name: string; original_name: string; type: string }[];
+      rows: Record<string, string | null>[];
+    }>;
+  };
+  if (body.projectId) {
+    if (!(await store.userCanAccessProject(user, body.projectId, "write"))) {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
+  }
+  const result = await store.importFolderJob(user, {
+    projectId: body.projectId,
+    projectInput: body.projectInput,
+    tables: body.tables,
+  });
+  return result;
+});
+
+app.get("/api/projects/:id/import-history", async (req) => {
+  const { id } = req.params as { id: string };
+  const limit = Number((req.query as { limit?: string }).limit || 50);
+  return store.listImportHistory(u(req), id, limit);
 });
 
 app.get("/api/projects/:id/members", async (req) =>
@@ -338,7 +419,8 @@ app.put("/api/settings/:key", async (req, reply) => {
   const user = u(req);
   const { key } = req.params as { key: string };
   const { value } = req.body as { value: string };
-  if (key.startsWith("nvidia_") && user.global_role !== "admin") {
+  if (!isAllowedSettingKey(key)) return reply.code(400).send({ error: "Setting key not allowed" });
+  if (/^(nvidia_|llm_)/.test(key) && user.global_role !== "admin") {
     return reply.code(403).send({ error: "Forbidden" });
   }
   if (key === "nvidia_api_key" && value === "••••••••") return { ok: true };
@@ -350,6 +432,27 @@ app.post("/api/llm/test", async (req, reply) => {
   const user = u(req);
   if (user.global_role !== "admin") return reply.code(403).send({ error: "Forbidden" });
   return testLlmConnection(store);
+});
+
+app.get("/api/llm/available", async () => ({
+  available: isAiAssistAvailable(),
+  cloud: cloudAllowed,
+}));
+
+// Any signed-in user may ask questions; the prompt is built client-side and the
+// SQL it produces still goes through runProjectQuery's guardrails.
+app.post("/api/llm/chat", async (req) => {
+  u(req);
+  const { messages, maxTokens, temperature } = req.body as {
+    messages: { role: string; content: string }[];
+    maxTokens?: number;
+    temperature?: number;
+  };
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error("Invalid request: messages are required");
+  }
+  const content = await llmChat(store, messages, { maxTokens, temperature });
+  return { content };
 });
 
 const spaRoot = path.resolve(process.env.SPA_ROOT || path.join(__dirname, "..", "..", "dist"));

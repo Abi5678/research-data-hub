@@ -1,0 +1,5 @@
+sample_id,mix_type,binder_pct,air_voids,date
+S-001,HMA,5.2,4.1,2022-06-01
+S-002,HMA,5.4,3.8,2022-06-02
+S-003,WMA,4.9,not_a_number,2022-06-03
+S-004,HMA,5.1,4.0,2022-06-04

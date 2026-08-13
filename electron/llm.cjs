@@ -1,28 +1,60 @@
 "use strict";
 
-// NVIDIA NIM (build.nvidia.com) client. OpenAI-compatible chat completions.
-// The API key lives in the local SQLite settings table and never reaches the
-// renderer process.
+// LLM client for optional schema assist.
+// NHDOT production default: cloud NVIDIA NIM is OFF (ALLOW_CLOUD_NIM must be "1").
+// Optional local/on-prem OpenAI-compatible endpoint via LLM_BASE_URL + settings.
 
 const db = require("./db.cjs");
 
-const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+const CLOUD_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const DEFAULT_MODEL = "nvidia/llama-3.3-nemotron-super-49b-instruct";
 
 const COLUMN_KINDS = ["text", "integer", "double precision", "boolean", "date", "timestamptz"];
 
+function cloudNimAllowed() {
+  return process.env.ALLOW_CLOUD_NIM === "1";
+}
+
+function localBaseUrl() {
+  const fromEnv = (process.env.LLM_BASE_URL || "").trim().replace(/\/$/, "");
+  const fromSettings = (db.getSetting("llm_base_url") || "").trim().replace(/\/$/, "");
+  return fromEnv || fromSettings || "";
+}
+
+function isAiAssistAvailable() {
+  if (localBaseUrl()) return true;
+  if (cloudNimAllowed() && db.getSetting("nvidia_api_key")) return true;
+  return false;
+}
+
 function getConfig() {
+  const local = localBaseUrl();
+  const model =
+    db.getSetting("nvidia_model") || db.getSetting("llm_model") || DEFAULT_MODEL;
+  if (local) {
+    const apiKey = db.getSetting("nvidia_api_key") || db.getSetting("llm_api_key") || "local";
+    return {
+      apiKey,
+      model,
+      apiUrl: `${local}/chat/completions`,
+      mode: "local",
+    };
+  }
+  if (!cloudNimAllowed()) {
+    throw new Error(
+      "Cloud NVIDIA NIM is disabled for this build (NHDOT). Configure a local LLM_BASE_URL or use deterministic import.",
+    );
+  }
   const apiKey = db.getSetting("nvidia_api_key");
-  const model = db.getSetting("nvidia_model") || DEFAULT_MODEL;
   if (!apiKey) {
     throw new Error("No NVIDIA API key configured. Add one under Settings.");
   }
-  return { apiKey, model };
+  return { apiKey, model, apiUrl: CLOUD_API_URL, mode: "cloud" };
 }
 
 async function chat(messages, { maxTokens = 8192, temperature = 0.2 } = {}) {
-  const { apiKey, model } = getConfig();
-  const res = await fetch(API_URL, {
+  const { apiKey, model, apiUrl } = getConfig();
+  const res = await fetch(apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -38,19 +70,23 @@ async function chat(messages, { maxTokens = 8192, temperature = 0.2 } = {}) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`NVIDIA API error ${res.status}: ${body.slice(0, 400)}`);
+    throw new Error(`LLM API error ${res.status}: ${body.slice(0, 400)}`);
   }
   const data = await res.json();
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.length === 0) {
-    throw new Error("NVIDIA API returned an empty response");
+    throw new Error("LLM API returned an empty response");
   }
   return content;
 }
 
 async function listModels() {
-  const { apiKey } = getConfig();
-  const res = await fetch("https://integrate.api.nvidia.com/v1/models", {
+  const { apiKey, apiUrl, mode } = getConfig();
+  if (mode !== "cloud") {
+    return [db.getSetting("nvidia_model") || DEFAULT_MODEL];
+  }
+  const base = apiUrl.replace(/\/chat\/completions$/, "");
+  const res = await fetch(`${base}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!res.ok) throw new Error(`Could not list models (${res.status})`);
@@ -59,16 +95,15 @@ async function listModels() {
 }
 
 async function testConnection() {
-  const { model } = getConfig();
+  const { model, mode } = getConfig();
   try {
     const reply = await chat(
       [{ role: "user", content: 'Reply with exactly the word "ok" and nothing else.' }],
       { maxTokens: 200, temperature: 0 },
     );
-    return { model, reply: reply.trim().slice(0, 80) };
+    return { model, reply: reply.trim().slice(0, 80), mode };
   } catch (err) {
-    // Model ids rotate on build.nvidia.com; on a 404 suggest live Nemotron ids.
-    if (String(err.message).includes("404")) {
+    if (String(err.message).includes("404") && mode === "cloud") {
       let suggestions = [];
       try {
         const ids = await listModels();
@@ -86,8 +121,6 @@ async function testConnection() {
   }
 }
 
-// Pull a JSON object out of a model reply that may be wrapped in prose or
-// markdown fences.
 function extractJson(text) {
   let t = text.trim();
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -100,7 +133,7 @@ function extractJson(text) {
   return JSON.parse(t.slice(start, end + 1));
 }
 
-const SYSTEM_PROMPT = `You are an expert research data engineer. You are given profiles of spreadsheet files (CSV / Excel sheets) found in a research project folder: file path, sheet name, column headers, inferred column types, row counts, and a few sample rows.
+const SYSTEM_PROMPT = `You are an expert research data engineer. You are given profiles of tabular files (CSV / TSV / TXT / Excel sheets) found in a research project folder: file path, sheet name, column headers, inferred column types, row counts, and sample rows (up to ~20 per source).
 
 Design a clean relational database schema for this data. Rules:
 
@@ -153,7 +186,6 @@ function validatePlan(plan) {
     t.sources = Array.isArray(t.sources) ? t.sources : [];
     t.fks = Array.isArray(t.fks) ? t.fks : [];
   }
-  // FKs must point at proposed tables/columns; drop the ones that don't.
   const colsByTable = new Map(plan.tables.map((t) => [t.key, new Set(t.columns.map((c) => c.name))]));
   for (const t of plan.tables) {
     t.fks = t.fks.filter(
@@ -171,8 +203,6 @@ function validatePlan(plan) {
   return plan;
 }
 
-// Assign ErdDiagram steps (1-4) by FK dependency depth: tables nothing depends
-// on sit at step 1, children below their parents.
 function assignSteps(plan) {
   const depth = new Map(plan.tables.map((t) => [t.key, 1]));
   for (let i = 0; i < 4; i++) {
@@ -198,14 +228,11 @@ async function analyzeProfiles(profiles) {
   try {
     plan = extractJson(raw);
   } catch (err) {
-    // One retry with explicit error feedback.
+    // One retry asking for JSON only.
     raw = await chat([
       ...messages,
-      { role: "assistant", content: raw.slice(0, 4000) },
-      {
-        role: "user",
-        content: `Your previous response could not be parsed as JSON (${err.message}). Respond again with ONLY the JSON object, no other text.`,
-      },
+      { role: "assistant", content: raw },
+      { role: "user", content: "Return ONLY valid JSON matching the required schema. No markdown." },
     ]);
     plan = extractJson(raw);
   }
@@ -214,8 +241,13 @@ async function analyzeProfiles(profiles) {
 
 module.exports = {
   chat,
-  listModels,
   testConnection,
   analyzeProfiles,
+  isAiAssistAvailable,
+  cloudNimAllowed,
+  localBaseUrl,
   DEFAULT_MODEL,
+  COLUMN_KINDS,
+  validatePlan,
+  extractJson,
 };

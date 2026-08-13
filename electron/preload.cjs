@@ -33,14 +33,20 @@ const DB_METHODS = [
   "runProjectQuery",
   "listSavedQueries",
   "insertSavedQuery",
+  "listAnalysisViews",
+  "insertAnalysisView",
+  "deleteAnalysisView",
   "listExportHistory",
   "insertExportHistory",
+  "listImportHistory",
+  "insertImportHistory",
   "getSetting",
   "setSetting",
   "attachSource",
   "listAttachedSources",
   "detachSource",
   "pickDatabaseFile",
+  "getDatabasePath",
 ];
 
 const api = {};
@@ -48,9 +54,14 @@ for (const name of DB_METHODS) {
   api[name] = (...args) => invoke(`db:${name}`, ...args);
 }
 
+api.backupDatabase = () => invoke("db:backupDatabase");
+api.restoreDatabase = () => invoke("db:restoreDatabase");
 api.testLlmConnection = () => invoke("llm:testConnection");
+api.llmChat = (messages, opts) => invoke("llm:chat", messages, opts);
+api.isAiAssistAvailable = () => invoke("llm:isAiAssistAvailable");
+api.cloudNimAllowed = () => invoke("llm:cloudNimAllowed");
 api.pickImportFolder = () => invoke("import:pickFolder");
-api.analyzeFolder = (folderPath) => invoke("import:analyzeFolder", folderPath);
+api.analyzeFolder = (folderPath, opts) => invoke("import:analyzeFolder", folderPath, opts || {});
 api.executeImportPlan = (payload) => invoke("import:executePlan", payload);
 api.onImportProgress = (cb) => {
   const listener = (_event, msg) => cb(msg);

@@ -1,9 +1,10 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -22,6 +23,9 @@ import type { ColumnSchema } from "@/lib/csv";
 import { DatasetUploadDialog } from "@/components/project/dataset-upload";
 import { AttachedSources } from "@/components/project/attached-sources";
 import { QueryTab } from "@/components/project/query-tab";
+import { BrowseTab } from "@/components/project/browse-tab";
+import { AnalyzeTab } from "@/components/project/analyze-tab";
+import { ChatTab } from "@/components/project/chat-tab";
 import { ResultsTable } from "@/components/project/results-table";
 import { exportRows } from "@/lib/export";
 import { ErdDiagram } from "@/components/project/erd-diagram";
@@ -44,14 +48,15 @@ import {
   Sparkles,
   Trash2,
   User2,
+  FolderOpen,
+  Table2,
+  LineChart,
+  MessageSquare,
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId")({
   head: () => ({
-    meta: [
-      { title: "Project — Research Data Hub" },
-      { name: "robots", content: "noindex" },
-    ],
+    meta: [{ title: "Project — Research Data Hub" }, { name: "robots", content: "noindex" }],
   }),
   component: ProjectDetailPage,
 });
@@ -78,6 +83,7 @@ type DatasetRow = {
   row_count: number;
   created_at: string;
   column_schema: ColumnSchema[];
+  read_only?: 0 | 1;
 };
 
 function ProjectDetailPage() {
@@ -174,41 +180,69 @@ function ProjectDetailPage() {
               </Badge>
             </div>
           </div>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
-                <Trash2 className="h-3.5 w-3.5" /> Delete
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete this project?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  All datasets, rows, saved queries, and export history for this project
-                  will be permanently removed. This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  onClick={() => deleteProject.mutate()}
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <Button asChild size="sm" className="gap-1.5">
+              <Link to="/import-folder" search={{ projectId }}>
+                <FolderOpen className="h-3.5 w-3.5" /> Import folder
+              </Link>
+            </Button>
+            <DatasetUploadDialog
+              projectId={projectId}
+              trigger={
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  <UploadCloud className="h-3.5 w-3.5" /> Upload CSV
+                </Button>
+              }
+            />
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
                 >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this project?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    All datasets, rows, saved queries, and export history for this project will be
+                    permanently removed. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => deleteProject.mutate()}
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </header>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-8">
-        <TabsList>
+        <TabsList className="h-auto min-h-9 flex-wrap justify-start">
           <TabsTrigger value="overview" className="gap-1.5">
             <Sparkles className="h-3.5 w-3.5" /> Overview
           </TabsTrigger>
+          <TabsTrigger value="ask" className="gap-1.5">
+            <MessageSquare className="h-3.5 w-3.5" /> Ask
+          </TabsTrigger>
           <TabsTrigger value="datasets" className="gap-1.5">
             <Database className="h-3.5 w-3.5" /> Datasets
+          </TabsTrigger>
+          <TabsTrigger value="browse" className="gap-1.5">
+            <Table2 className="h-3.5 w-3.5" /> Browse
+          </TabsTrigger>
+          <TabsTrigger value="analyze" className="gap-1.5">
+            <LineChart className="h-3.5 w-3.5" /> Analyze
           </TabsTrigger>
           <TabsTrigger value="query" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" /> Query
@@ -229,8 +263,25 @@ function ProjectDetailPage() {
             onGoToTab={setActiveTab}
           />
         </TabsContent>
+        <TabsContent value="ask" className="mt-6">
+          <ChatTab projectId={projectId} datasets={datasets ?? []} />
+        </TabsContent>
         <TabsContent value="datasets" className="mt-6">
           <DatasetsTab
+            projectId={projectId}
+            projectCode={project.project_code}
+            datasets={datasets ?? []}
+          />
+        </TabsContent>
+        <TabsContent value="browse" className="mt-6">
+          <BrowseTab
+            projectId={projectId}
+            projectCode={project.project_code}
+            datasets={datasets ?? []}
+          />
+        </TabsContent>
+        <TabsContent value="analyze" className="mt-6">
+          <AnalyzeTab
             projectId={projectId}
             projectCode={project.project_code}
             datasets={datasets ?? []}
@@ -283,9 +334,7 @@ function OverviewTab({
     { label: "Total rows", value: totalRows.toLocaleString(), icon: Layers },
     {
       label: "Columns tracked",
-      value: datasets
-        .reduce((s, d) => s + d.column_schema.length, 0)
-        .toLocaleString(),
+      value: datasets.reduce((s, d) => s + d.column_schema.length, 0).toLocaleString(),
       icon: ListTree,
     },
     {
@@ -310,8 +359,8 @@ function OverviewTab({
                 Template · {template.name}
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                {Object.keys(meta.bindings ?? {}).length} of {template.tables.length}{" "}
-                template tables loaded.
+                {Object.keys(meta.bindings ?? {}).length} of {template.tables.length} template
+                tables loaded.
               </p>
             </div>
             {/* Guided setup only exists for hardcoded templates, not AI imports */}
@@ -327,113 +376,109 @@ function OverviewTab({
       )}
       <ProjectSharing projectId={projectId} />
       <div className="grid gap-6 lg:grid-cols-3">
-      <div className="lg:col-span-2 space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {stats.map((s) => (
-            <div
-              key={s.label}
-              className="rounded-xl border border-border/70 bg-card p-4 shadow-card"
-            >
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                <s.icon className="h-3.5 w-3.5 text-primary" /> {s.label}
-              </div>
-              <div className="mt-2 text-2xl font-extrabold tracking-tight text-foreground">
-                {s.value}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-card">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-foreground">Quick access</h3>
-            <span className="text-[11px] text-muted-foreground">
-              Jump straight to a table
-            </span>
-          </div>
-          {datasets.length === 0 ? (
-            <div className="mt-4 rounded-xl border border-dashed border-border bg-secondary/40 p-6 text-center">
-              <UploadCloud className="mx-auto h-6 w-6 text-muted-foreground" />
-              <p className="mt-2 text-xs text-muted-foreground">
-                No tables yet. Upload a CSV in the Datasets tab to populate this
-                project's database.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3"
-                onClick={() => onGoToTab("datasets")}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {stats.map((s) => (
+              <div
+                key={s.label}
+                className="rounded-xl border border-border/70 bg-card p-4 shadow-card"
               >
-                Go to Datasets
-              </Button>
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <s.icon className="h-3.5 w-3.5 text-primary" /> {s.label}
+                </div>
+                <div className="mt-2 text-2xl font-extrabold tracking-tight text-foreground">
+                  {s.value}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-card">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-foreground">Quick access</h3>
+              <span className="text-[11px] text-muted-foreground">Open a table in Browse</span>
             </div>
-          ) : (
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {datasets.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
+            {datasets.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-dashed border-border bg-secondary/40 p-6 text-center">
+                <UploadCloud className="mx-auto h-6 w-6 text-muted-foreground" />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  No tables yet. Upload a CSV in the Datasets tab to populate this project's
+                  database.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
                   onClick={() => onGoToTab("datasets")}
-                  className="group flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-secondary/40 px-3 py-2 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
                 >
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-semibold text-foreground">
-                      {d.display_name}
+                  Go to Datasets
+                </Button>
+              </div>
+            ) : (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {datasets.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => onGoToTab("browse")}
+                    className="group flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-secondary/40 px-3 py-2 text-left transition-colors hover:border-primary/50 hover:bg-primary/5"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-foreground">
+                        {d.display_name}
+                      </div>
+                      <div className="truncate text-[10px] text-muted-foreground">
+                        {d.row_count.toLocaleString()} rows · {d.column_schema.length} cols
+                      </div>
                     </div>
-                    <div className="truncate text-[10px] text-muted-foreground">
-                      {d.row_count.toLocaleString()} rows · {d.column_schema.length}{" "}
-                      cols
+                    <ArrowLeft className="h-3.5 w-3.5 rotate-180 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-card">
+            <h3 className="text-sm font-bold text-foreground">Recent datasets</h3>
+            {datasets.length === 0 ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                No datasets yet. Head to the Datasets tab to upload your first CSV.
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-border/60">
+                {datasets.slice(0, 5).map((d) => (
+                  <li key={d.id} className="flex items-center justify-between py-2.5">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-foreground">
+                        {d.display_name}
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {d.column_schema.length} columns • {d.row_count.toLocaleString()} rows
+                      </div>
                     </div>
-                  </div>
-                  <ArrowLeft className="h-3.5 w-3.5 rotate-180 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-                </button>
-              ))}
-            </div>
-          )}
+                    <span className="text-[11px] text-muted-foreground">
+                      {new Date(d.created_at).toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-        <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-card">
-          <h3 className="text-sm font-bold text-foreground">Recent datasets</h3>
-          {datasets.length === 0 ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              No datasets yet. Head to the Datasets tab to upload your first CSV.
-            </p>
-          ) : (
-            <ul className="mt-3 divide-y divide-border/60">
-              {datasets.slice(0, 5).map((d) => (
-                <li key={d.id} className="flex items-center justify-between py-2.5">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-foreground">
-                      {d.display_name}
-                    </div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {d.column_schema.length} columns •{" "}
-                      {d.row_count.toLocaleString()} rows
-                    </div>
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {new Date(d.created_at).toLocaleDateString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+        <div className="rounded-2xl border border-border/70 bg-gradient-primary-soft p-6 shadow-card">
+          <h3 className="text-sm font-bold text-foreground">Project details</h3>
+          <dl className="mt-4 space-y-3 text-xs">
+            <Detail label="Code" value={project.project_code} />
+            <Detail label="PI" value={project.pi_name ?? "—"} />
+            <Detail label="Sponsor" value={project.sponsor ?? "—"} />
+            <Detail
+              label="Start"
+              value={project.start_date ? new Date(project.start_date).toLocaleDateString() : "—"}
+            />
+            <Detail
+              label="End"
+              value={project.end_date ? new Date(project.end_date).toLocaleDateString() : "—"}
+            />
+          </dl>
         </div>
-      </div>
-      <div className="rounded-2xl border border-border/70 bg-gradient-primary-soft p-6 shadow-card">
-        <h3 className="text-sm font-bold text-foreground">Project details</h3>
-        <dl className="mt-4 space-y-3 text-xs">
-          <Detail label="Code" value={project.project_code} />
-          <Detail label="PI" value={project.pi_name ?? "—"} />
-          <Detail label="Sponsor" value={project.sponsor ?? "—"} />
-          <Detail
-            label="Start"
-            value={project.start_date ? new Date(project.start_date).toLocaleDateString() : "—"}
-          />
-          <Detail
-            label="End"
-            value={project.end_date ? new Date(project.end_date).toLocaleDateString() : "—"}
-          />
-        </dl>
-      </div>
       </div>
       {template && <ErdDiagram template={template} bindings={meta.bindings} />}
     </div>
@@ -461,6 +506,17 @@ function DatasetsTab({
   datasets: DatasetRow[];
 }) {
   const qc = useQueryClient();
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredDatasets = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+    if (!q) return datasets;
+    return datasets.filter(
+      (d) =>
+        d.display_name.toLowerCase().includes(q) ||
+        d.table_name.toLowerCase().includes(q) ||
+        (d.source_filename ?? "").toLowerCase().includes(q),
+    );
+  }, [datasets, tableSearch]);
   const del = useMutation({
     mutationFn: async (id: string) => {
       await api.dropProjectDataset(id);
@@ -500,14 +556,21 @@ function DatasetsTab({
   });
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-foreground">Datasets</h2>
           <p className="text-xs text-muted-foreground">
-            Upload CSVs. Column types are inferred automatically.
+            Upload CSVs or import a whole folder of spreadsheets into this project.
           </p>
         </div>
-        <DatasetUploadDialog projectId={projectId} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button asChild variant="outline" size="sm" className="gap-1.5">
+            <Link to="/import-folder" search={{ projectId }}>
+              <FolderOpen className="h-3.5 w-3.5" /> Import folder
+            </Link>
+          </Button>
+          <DatasetUploadDialog projectId={projectId} />
+        </div>
       </div>
       <AttachedSources projectId={projectId} />
       {datasets.length === 0 ? (
@@ -515,110 +578,122 @@ function DatasetsTab({
           <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-gradient-primary shadow-glow">
             <UploadCloud className="h-5 w-5 text-white" />
           </div>
-          <h3 className="mt-4 text-sm font-bold text-foreground">
-            Upload your first CSV
-          </h3>
+          <h3 className="mt-4 text-sm font-bold text-foreground">Upload your first CSV</h3>
           <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
-            Drop in a CSV — headers become columns, types are inferred, and the
-            file becomes a queryable table inside this project's database.
+            Drop in a CSV — headers become columns, types are inferred, and the file becomes a
+            queryable table inside this project's database.
           </p>
         </div>
       ) : (
         <div className="space-y-3">
-          {datasets.map((d) => (
-            <div
-              key={d.id}
-              className="rounded-2xl border border-border/70 bg-card p-5 shadow-card"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-primary">
-                    {d.table_name}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={tableSearch}
+              onChange={(e) => setTableSearch(e.target.value)}
+              placeholder="Search tables by name..."
+              className="h-9 pl-9 text-xs"
+            />
+          </div>
+          {filteredDatasets.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
+              No tables match "{tableSearch.trim()}".
+            </div>
+          ) : (
+            filteredDatasets.map((d) => (
+              <div
+                key={d.id}
+                className="rounded-2xl border border-border/70 bg-card p-5 shadow-card"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                      {d.table_name}
+                    </div>
+                    <h3 className="mt-0.5 flex items-center gap-2 truncate text-base font-bold text-foreground">
+                      {d.display_name}
+                      {d.read_only === 1 && (
+                        <Badge variant="outline" className="shrink-0 text-[9px]">
+                          attached · read-only
+                        </Badge>
+                      )}
+                    </h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                      <span>{d.row_count.toLocaleString()} rows</span>
+                      <span>•</span>
+                      <span>{d.column_schema.length} columns</span>
+                      {d.source_filename && (
+                        <>
+                          <span>•</span>
+                          <span className="truncate">{d.source_filename}</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <h3 className="mt-0.5 flex items-center gap-2 truncate text-base font-bold text-foreground">
-                    {d.display_name}
-                    {d.read_only === 1 && (
-                      <Badge variant="outline" className="shrink-0 text-[9px]">
-                        attached · read-only
-                      </Badge>
-                    )}
-                  </h3>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                    <span>{d.row_count.toLocaleString()} rows</span>
-                    <span>•</span>
-                    <span>{d.column_schema.length} columns</span>
-                    {d.source_filename && (
-                      <>
-                        <span>•</span>
-                        <span className="truncate">{d.source_filename}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground hover:text-foreground"
-                  onClick={() => exportOne.mutate(d)}
-                  disabled={exportOne.isPending}
-                >
-                  <Download className="h-3.5 w-3.5" /> Export CSV
-                </Button>
-                {d.read_only !== 1 && (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
+                  <div className="flex items-center gap-1">
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-muted-foreground hover:text-destructive"
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => exportOne.mutate(d)}
+                      disabled={exportOne.isPending}
                     >
-                      <Trash2 className="h-3.5 w-3.5" /> Remove
+                      <Download className="h-3.5 w-3.5" /> Export CSV
                     </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete "{d.display_name}"?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This drops the underlying database table
-                        <code className="mx-1 rounded bg-secondary px-1 py-0.5 text-[10px]">{d.table_name}</code>
-                        and removes {d.row_count.toLocaleString()} rows. This cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        onClick={() => del.mutate(d.id)}
-                      >
-                        Delete dataset
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-                )}
+                    {d.read_only !== 1 && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" /> Remove
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete "{d.display_name}"?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This drops the underlying database table
+                              <code className="mx-1 rounded bg-secondary px-1 py-0.5 text-[10px]">
+                                {d.table_name}
+                              </code>
+                              and removes {d.row_count.toLocaleString()} rows. This cannot be
+                              undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              onClick={() => del.mutate(d.id)}
+                            >
+                              Delete dataset
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {d.column_schema.map((c) => (
-                  <span
-                    key={c.name}
-                    className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-secondary/60 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
-                  >
-                    {c.name}
-                    <span className="rounded bg-background px-1 text-[9px] font-bold uppercase text-primary">
-                      {c.type}
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {d.column_schema.map((c) => (
+                    <span
+                      key={c.name}
+                      className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-secondary/60 px-2 py-0.5 text-[10px] font-semibold text-muted-foreground"
+                    >
+                      {c.name}
+                      <span className="rounded bg-background px-1 text-[9px] font-bold uppercase text-primary">
+                        {c.type}
+                      </span>
                     </span>
-                  </span>
-                ))}
+                  ))}
+                </div>
+                <DataDictionary projectId={projectId} datasetId={d.id} columns={d.column_schema} />
               </div>
-              <DataDictionary
-                projectId={projectId}
-                datasetId={d.id}
-                columns={d.column_schema}
-              />
-            </div>
-          ))}
+            ))
+          )}
         </div>
       )}
     </div>
@@ -632,29 +707,65 @@ function ExportsTab({ projectId }: { projectId: string }) {
       return api.listExportHistory(projectId, 50);
     },
   });
+  const imports = useQuery({
+    queryKey: ["imports", projectId],
+    queryFn: async () => api.listImportHistory(projectId, 20),
+  });
   if (isLoading) return <Skeleton className="h-40 rounded-2xl" />;
-  if (!data || data.length === 0) {
-    return (
-      <div className="rounded-2xl border border-dashed border-border bg-secondary/40 p-10 text-center">
-        <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-gradient-primary shadow-glow">
-          <Download className="h-5 w-5 text-white" />
-        </div>
-        <h3 className="mt-4 text-sm font-bold text-foreground">No exports yet</h3>
-        <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
-          Every CSV you download from the Query or Datasets tab is logged here
-          with the filename, row count, and timestamp — useful for audit trails.
-        </p>
-      </div>
-    );
-  }
   return (
-    <ResultsTable
-      columns={["filename", "row_count", "created_at"]}
-      rows={data.map((r) => ({
-        filename: r.filename,
-        row_count: r.row_count,
-        created_at: new Date(r.created_at).toLocaleString(),
-      }))}
-    />
+    <div className="space-y-6">
+      <div>
+        <h3 className="mb-2 text-sm font-bold text-foreground">Import history</h3>
+        {!imports.data?.length ? (
+          <p className="text-xs text-muted-foreground">No folder imports logged yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {imports.data.map((row) => (
+              <div
+                key={row.id}
+                className="rounded-xl border border-border/70 bg-card p-3 text-xs shadow-card"
+              >
+                <div className="font-semibold">
+                  {row.mode} · {new Date(row.created_at).toLocaleString()}
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {row.report?.totals
+                    ? `${row.report.totals.tables} tables · ${row.report.totals.inserted.toLocaleString()} rows · ${row.report.totals.invalid} invalid · ${row.report.totals.skippedSources} sources skipped`
+                    : "—"}
+                </div>
+                {row.folder_path && (
+                  <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                    {row.folder_path}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div>
+        <h3 className="mb-2 text-sm font-bold text-foreground">Export history</h3>
+        {!data || data.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border bg-secondary/40 p-10 text-center">
+            <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-gradient-primary shadow-glow">
+              <Download className="h-5 w-5 text-white" />
+            </div>
+            <h3 className="mt-4 text-sm font-bold text-foreground">No exports yet</h3>
+            <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
+              Every CSV you download from the Query or Datasets tab is logged here.
+            </p>
+          </div>
+        ) : (
+          <ResultsTable
+            columns={["filename", "row_count", "created_at"]}
+            rows={data.map((r) => ({
+              filename: r.filename,
+              row_count: r.row_count,
+              created_at: new Date(r.created_at).toLocaleString(),
+            }))}
+          />
+        )}
+      </div>
+    </div>
   );
 }

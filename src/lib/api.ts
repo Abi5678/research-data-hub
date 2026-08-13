@@ -53,6 +53,15 @@ export type SavedQuery = {
   created_at: string;
 };
 
+export type AnalysisView = {
+  id: string;
+  project_id: string;
+  name: string;
+  spec: unknown;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ExportHistoryRow = {
   id: string;
   project_id: string;
@@ -111,6 +120,9 @@ export type LocalApi = {
   ): Promise<{ rows: Record<string, unknown>[]; columns: string[] }>;
   listSavedQueries(projectId: string): Promise<SavedQuery[]>;
   insertSavedQuery(projectId: string, name: string, sqlText: string): Promise<void>;
+  listAnalysisViews(projectId: string): Promise<AnalysisView[]>;
+  insertAnalysisView(projectId: string, name: string, spec: unknown): Promise<{ id: string }>;
+  deleteAnalysisView(projectId: string, id: string): Promise<void>;
   listExportHistory(projectId: string, limit?: number): Promise<ExportHistoryRow[]>;
   insertExportHistory(args: {
     projectId: string;
@@ -118,6 +130,7 @@ export type LocalApi = {
     rowCount: number;
     queryId?: string | null;
   }): Promise<void>;
+  listImportHistory(projectId: string, limit?: number): Promise<import("@/lib/ai-import").ImportHistoryRow[]>;
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string): Promise<void>;
   /** Desktop only — the lab server has no local filesystem to attach from. */
@@ -128,13 +141,28 @@ export type LocalApi = {
   ): Promise<{ id: string; alias: string; file_path: string; table_count: number }>;
   listAttachedSources(projectId: string): Promise<AttachedSource[]>;
   detachSource(sourceId: string): Promise<void>;
-  testLlmConnection(): Promise<{ model: string; reply: string }>;
+  testLlmConnection(): Promise<{ model: string; reply: string; mode?: string }>;
+  /** Free-form chat; the Ask tab builds the messages. */
+  llmChat(
+    messages: { role: string; content: string }[],
+    opts?: { maxTokens?: number; temperature?: number },
+  ): Promise<string>;
+  isAiAssistAvailable(): Promise<boolean>;
+  cloudNimAllowed(): Promise<boolean>;
+  backupDatabase(): Promise<string | null>;
+  restoreDatabase(): Promise<string | null>;
+  getDatabasePath(): Promise<string | null>;
   pickImportFolder(): Promise<string | null>;
-  analyzeFolder(folderPath: string): Promise<AnalyzeFolderResult>;
+  analyzeFolder(
+    folderPath: string,
+    opts?: { useAi?: boolean },
+  ): Promise<AnalyzeFolderResult>;
   executeImportPlan(payload: {
     folder: string;
-    projectInput: ProjectInput;
+    projectInput?: ProjectInput;
+    projectId?: string;
     tables: PlannedTable[];
+    mode?: string;
   }): Promise<ExecuteImportResult>;
   onImportProgress(cb: (msg: string) => void): () => void;
 };

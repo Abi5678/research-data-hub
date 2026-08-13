@@ -1,6 +1,6 @@
 import type { ColumnKind } from "@/lib/csv";
 
-// Shapes returned by the main-process AI folder analysis (electron/llm.cjs +
+// Shapes returned by the main-process folder analysis (electron/llm.cjs +
 // electron/folder-import.cjs). PlannedTable mirrors TemplateTable closely so
 // converting a plan into a runtime ProjectTemplate is a straight map.
 
@@ -36,6 +36,7 @@ export type ImportPlan = {
   project_name: string;
   notes: string;
   tables: PlannedTable[];
+  mode?: string;
 };
 
 export type SourceProfile = {
@@ -52,9 +53,34 @@ export type AnalyzeFolderResult = {
   profiles: SourceProfile[];
   skipped: { file: string; reason: string }[];
   folder: string;
+  mode?: string;
+};
+
+export type ImportHistoryRow = {
+  id: string;
+  project_id: string;
+  folder_path: string | null;
+  mode: string;
+  report: {
+    mode?: string;
+    results?: { key: string; display_name: string; inserted: number; invalid: number }[];
+    skippedSources?: { file: string; reason: string }[];
+    quarantine?: unknown[];
+    totals?: {
+      tables: number;
+      inserted: number;
+      invalid: number;
+      skippedSources: number;
+    };
+  };
+  created_at: string;
 };
 
 export type ExecuteImportResult = {
   projectId: string;
   results: { key: string; display_name: string; inserted: number; invalid: number }[];
+  skippedSources?: { file: string; reason: string }[];
+  quarantine?: unknown[];
+  report?: ImportHistoryRow["report"];
+  importId?: string;
 };

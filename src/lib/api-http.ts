@@ -92,6 +92,14 @@ export const httpApi: LocalApi = {
       method: "POST",
       body: JSON.stringify({ name, sqlText }),
     }),
+  listAnalysisViews: (projectId) => req(`/api/projects/${projectId}/analysis-views`),
+  insertAnalysisView: (projectId, name, spec) =>
+    req(`/api/projects/${projectId}/analysis-views`, {
+      method: "POST",
+      body: JSON.stringify({ name, spec }),
+    }),
+  deleteAnalysisView: (projectId, id) =>
+    req(`/api/projects/${projectId}/analysis-views/${id}`, { method: "DELETE" }),
   listExportHistory: (projectId, limit) =>
     req(`/api/projects/${projectId}/exports?limit=${limit ?? 50}`),
   insertExportHistory: (args) =>
@@ -103,6 +111,8 @@ export const httpApi: LocalApi = {
         queryId: args.queryId ?? null,
       }),
     }),
+  listImportHistory: (projectId, limit) =>
+    req(`/api/projects/${projectId}/import-history?limit=${limit ?? 50}`),
   getSetting: async (key) => {
     const r = await req<{ value: string | null }>(`/api/settings/${encodeURIComponent(key)}`);
     return r.value;
@@ -113,16 +123,41 @@ export const httpApi: LocalApi = {
       body: JSON.stringify({ value }),
     }),
   testLlmConnection: () => req("/api/llm/test", { method: "POST" }),
+  llmChat: async (messages, opts) => {
+    const r = await req<{ content: string }>("/api/llm/chat", {
+      method: "POST",
+      body: JSON.stringify({ messages, ...opts }),
+    });
+    return r.content;
+  },
+  isAiAssistAvailable: async () => {
+    const r = await req<{ available: boolean }>("/api/llm/available");
+    return r.available;
+  },
+  cloudNimAllowed: async () => {
+    const r = await req<{ cloud: boolean }>("/api/llm/available");
+    return r.cloud;
+  },
+  backupDatabase: async () => {
+    throw new Error("Database backup is only available in the desktop app.");
+  },
+  restoreDatabase: async () => {
+    throw new Error("Database restore is only available in the desktop app.");
+  },
+  getDatabasePath: async () => null,
   pickImportFolder: async () => {
     throw new Error(
-      "Folder import is only available in the desktop app. Use CSV upload in the browser.",
+      "Native folder pick is desktop-only. Use Choose folder / Upload zip on this page.",
     );
   },
   analyzeFolder: async () => {
-    throw new Error("Folder import is only available in the desktop app.");
+    throw new Error("AI folder analyze is desktop-only. Browser import is deterministic.");
   },
-  executeImportPlan: async () => {
-    throw new Error("Folder import is only available in the desktop app.");
+  executeImportPlan: async (payload) => {
+    return req<ExecuteImportResult>("/api/import/folder-job", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
   onImportProgress: () => () => {},
   pickDatabaseFile: async () => {

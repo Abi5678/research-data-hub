@@ -28,7 +28,12 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 
-const navAll = [
+const navAll: {
+  title: string;
+  url: string;
+  icon: React.ComponentType<{ className?: string }>;
+  desktopOnly?: boolean;
+}[] = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "New project", url: "/projects/new", icon: FolderPlus },
   { title: "Import research folder", url: "/import-folder", icon: FolderOpen },

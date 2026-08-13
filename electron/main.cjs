@@ -41,9 +41,9 @@ function assertApprovedImportFolder(folderPath) {
 }
 
 function registerIpc() {
-  // attachSource takes a filesystem path, so it gets an explicit handler that
-  // checks the path came from a dialog rather than from renderer-supplied text.
-  const manual = new Set(["open", "attachSource"]);
+  // attachSource / backup / restore need dialog-backed handlers (paths must not
+  // come from free-form renderer strings). Skip them in the generic loop.
+  const manual = new Set(["open", "attachSource", "backupDatabase", "restoreDatabase"]);
   const methods = Object.keys(dbApi).filter((k) => !manual.has(k));
   for (const name of methods) {
     ipcMain.handle(`db:${name}`, (_event, ...args) => dbApi[name](...args));
@@ -70,6 +70,46 @@ function registerIpc() {
 
   ipcMain.handle("llm:testConnection", () => llm.testConnection());
 
+  // Free-form chat used by the Ask tab. Messages are built in the renderer so
+  // desktop and server modes share one prompt; the key stays in the main process.
+  ipcMain.handle("llm:chat", (_event, messages, opts) => llm.chat(messages, opts ?? {}));
+  ipcMain.handle("llm:isAiAssistAvailable", () => llm.isAiAssistAvailable());
+  ipcMain.handle("llm:cloudNimAllowed", () => llm.cloudNimAllowed());
+
+  ipcMain.handle("db:backupDatabase", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showSaveDialog(win, {
+      title: "Backup database",
+      defaultPath: `research-data-hub-backup-${new Date().toISOString().slice(0, 10)}.sqlite3`,
+      filters: [{ name: "SQLite", extensions: ["sqlite3", "db"] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    dbApi.backupDatabase(res.filePath);
+    return res.filePath;
+  });
+
+  ipcMain.handle("db:restoreDatabase", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const confirm = await dialog.showMessageBox(win, {
+      type: "warning",
+      buttons: ["Cancel", "Restore"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "Restore database",
+      message: "Replace the current database with a backup?",
+      detail: "This cannot be undone. Close other work first.",
+    });
+    if (confirm.response !== 1) return null;
+    const res = await dialog.showOpenDialog(win, {
+      title: "Choose backup file",
+      properties: ["openFile"],
+      filters: [{ name: "SQLite", extensions: ["sqlite3", "db", "sqlite"] }],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    dbApi.restoreDatabase(res.filePaths[0]);
+    return res.filePaths[0];
+  });
+
   ipcMain.handle("import:pickFolder", async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const res = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });
@@ -78,11 +118,15 @@ function registerIpc() {
     return picked;
   });
 
-  ipcMain.handle("import:analyzeFolder", (event, folderPath) => {
+  ipcMain.handle("import:analyzeFolder", (event, folderPath, opts) => {
     const folder = assertApprovedImportFolder(folderPath);
-    return folderImport.analyzeFolder(folder, (msg) => {
-      event.sender.send("import-progress", msg);
-    });
+    return folderImport.analyzeFolder(
+      folder,
+      (msg) => {
+        event.sender.send("import-progress", msg);
+      },
+      opts && typeof opts === "object" ? opts : {},
+    );
   });
 
   ipcMain.handle("import:executePlan", (event, payload) => {
