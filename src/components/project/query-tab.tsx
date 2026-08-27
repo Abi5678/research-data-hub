@@ -109,6 +109,8 @@ type BuilderState = {
 const OPS: FilterOp[] = ["=", "!=", ">", "<", ">=", "<=", "contains", "is null", "in"];
 const PAGE_SIZE = 50;
 const QUERY_FETCH_LIMIT = 5000;
+// Exports pull the full result, not the on-screen preview page.
+const EXPORT_FETCH_LIMIT = 200000;
 
 function quoteIdent(s: string) {
   return '"' + s.replace(/"/g, '""') + '"';
@@ -860,7 +862,7 @@ function ExampleQueriesPanel({
 
 // ============ RUNNER + RESULTS ============
 
-type QueryResult = { columns: string[]; rows: Record<string, unknown>[] };
+type QueryResult = { columns: string[]; rows: Record<string, unknown>[]; truncated: boolean };
 
 function QueryRunner({
   projectId,
@@ -892,7 +894,11 @@ function QueryRunner({
     },
     onSuccess: (data) => {
       setError(null);
-      setResults({ rows: data.rows ?? [], columns: data.columns ?? [] });
+      setResults({
+        rows: data.rows ?? [],
+        columns: data.columns ?? [],
+        truncated: data.truncated === true,
+      });
       setPage(0);
     },
     onError: (err) => {
@@ -904,7 +910,7 @@ function QueryRunner({
   const exportCsv = useMutation({
     mutationFn: async (format: ExportFormat) => {
       if (!sql.trim()) throw new Error("Nothing to export");
-      const full = await api.runProjectQuery(projectId, sql, QUERY_FETCH_LIMIT);
+      const full = await api.runProjectQuery(projectId, sql, EXPORT_FETCH_LIMIT);
       const cols =
         selectedCols?.length && results
           ? selectedCols.filter((c) => full.columns.includes(c))
@@ -917,10 +923,18 @@ function QueryRunner({
         label: queryLabel ?? null,
         format,
       });
-      return { n: full.rows.length, format };
+      return { n: full.rows.length, format, truncated: full.truncated === true };
     },
-    onSuccess: ({ n, format }) => {
-      toast.success(`Exported ${n.toLocaleString()} rows as ${format.toUpperCase()}`);
+    onSuccess: ({ n, format, truncated }) => {
+      const msg = `Exported ${n.toLocaleString()} rows as ${format.toUpperCase()}`;
+      // Never report a clipped export as a complete one.
+      if (truncated) {
+        toast.warning(
+          `${msg} — result was capped at ${EXPORT_FETCH_LIMIT.toLocaleString()} rows; add a LIMIT or filter to export the rest`,
+        );
+      } else {
+        toast.success(msg);
+      }
       qc.invalidateQueries({ queryKey: ["exports", projectId] });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed"),
@@ -1060,7 +1074,9 @@ function QueryRunner({
           <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
             <div>
               {results.rows.length.toLocaleString()} row
-              {results.rows.length === 1 ? "" : "s"} · page {page + 1} of {totalPages}
+              {results.rows.length === 1 ? "" : "s"}
+              {results.truncated ? " (preview capped — export for the full result)" : ""} · page{" "}
+              {page + 1} of {totalPages}
             </div>
             <div className="flex items-center gap-1">
               <Button

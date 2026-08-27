@@ -1,6 +1,10 @@
 import type { ColumnSchema } from "@/lib/csv";
 
 export const BROWSE_FETCH_LIMIT = 10000;
+// One row past the display cap. Fetching it is how Browse tells a complete
+// result from a clipped one: an exact row count of BROWSE_FETCH_LIMIT is
+// ambiguous, and guessing from it warned either never or wrongly.
+export const BROWSE_PROBE_LIMIT = BROWSE_FETCH_LIMIT + 1;
 export const BROWSE_DEFAULT_VISIBLE_COLS = 12;
 
 export type BrowseFilterOp = "equals" | "in" | "contains";
@@ -28,6 +32,18 @@ export function guessIdColumn(columns: ColumnSchema[]): string {
   return scored[0]?.name ?? columns[0]!.name;
 }
 
+/**
+ * Whether a dataset's own schema declares a row_id.
+ *
+ * Every dataset this app imports has one (it is the table's PK), but an
+ * attached source reflects an arbitrary external table and a combined dataset
+ * only exposes one when all of its sources do — so it has to be asked, not
+ * assumed.
+ */
+export function hasRowIdColumn(columns: ColumnSchema[]): boolean {
+  return columns.some((c) => c.name === "row_id");
+}
+
 export function defaultVisibleColumns(columns: ColumnSchema[]): string[] {
   const names = columns.map((c) => c.name).filter((n) => n !== "row_id");
   if (names.length <= BROWSE_DEFAULT_VISIBLE_COLS) return names;
@@ -41,11 +57,15 @@ export function buildBrowseSql(args: {
   filterOp?: BrowseFilterOp;
   filterValue?: string;
   limit?: number;
+  /** Whether the table actually has a row_id. Attached sources reflect
+   *  arbitrary external tables and usually do not, and asking for one made
+   *  Browse fail with a raw `no such column: row_id`. Defaults to true, which
+   *  is the case for every dataset this app creates itself. */
+  hasRowId?: boolean;
 }): string {
-  const cols =
-    args.columns.length > 0
-      ? ["row_id", ...args.columns.filter((c) => c !== "row_id")].map(quoteIdent)
-      : ["*"];
+  const named = args.columns.filter((c) => c !== "row_id");
+  const selected = args.hasRowId === false ? named : ["row_id", ...named];
+  const cols = args.columns.length > 0 && selected.length > 0 ? selected.map(quoteIdent) : ["*"];
   const select = cols.join(", ");
   let sql = `SELECT ${select} FROM ${args.tableName}`;
 
@@ -73,7 +93,7 @@ export function buildBrowseSql(args: {
     }
   }
 
-  const limit = Math.min(Math.max(args.limit ?? BROWSE_FETCH_LIMIT, 1), BROWSE_FETCH_LIMIT);
+  const limit = Math.min(Math.max(args.limit ?? BROWSE_FETCH_LIMIT, 1), BROWSE_PROBE_LIMIT);
   sql += ` LIMIT ${limit}`;
   return sql;
 }

@@ -15,7 +15,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Database, Link2Off, Plus } from "lucide-react";
+import { AlertTriangle, Database, Link2Off, Plus, RefreshCw } from "lucide-react";
 
 /**
  * Projects whose data already lives in a curated database — built by an ETL
@@ -50,6 +50,29 @@ export function AttachedSources({ projectId }: { projectId: string }) {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not attach"),
   });
 
+  /**
+   * An attached database is maintained by someone else's pipeline, so its
+   * contents move under us: tables get added or dropped and row counts change.
+   * Nothing here polls for that — this re-reads on demand, and also picks the
+   * source back up if its file was missing when the app started.
+   */
+  const reload = useMutation({
+    mutationFn: () => api.refreshAttachedSources(projectId),
+    onSuccess: (res) => {
+      if (res.unavailable.length > 0) {
+        toast.warning(
+          `${res.unavailable.length} database(s) unavailable: ${res.unavailable
+            .map((u) => `${u.alias} (${u.reason})`)
+            .join(", ")}`,
+        );
+      } else {
+        toast.success(`Re-read ${res.refreshed} attached database(s)`);
+      }
+      refresh();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not refresh"),
+  });
+
   const detach = useMutation({
     mutationFn: (id: string) => api.detachSource(id),
     onSuccess: () => {
@@ -74,16 +97,30 @@ export function AttachedSources({ projectId }: { projectId: string }) {
             datasets; the file is never modified.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          onClick={() => attach.mutate()}
-          disabled={attach.isPending}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {attach.isPending ? "Attaching…" : "Attach database"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {rows.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => reload.mutate()}
+              disabled={reload.isPending}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${reload.isPending ? "animate-spin" : ""}`} />
+              {reload.isPending ? "Re-reading…" : "Refresh"}
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => attach.mutate()}
+            disabled={attach.isPending}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {attach.isPending ? "Attaching…" : "Attach database"}
+          </Button>
+        </div>
       </div>
 
       {rows.length > 0 && (
@@ -94,7 +131,9 @@ export function AttachedSources({ projectId }: { projectId: string }) {
               className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 bg-secondary/30 px-3 py-2"
             >
               <div className="flex min-w-0 items-center gap-2">
-                <Database className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <Database
+                  className={`h-3.5 w-3.5 shrink-0 ${s.available === 0 ? "text-destructive" : "text-primary"}`}
+                />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-semibold text-foreground">
@@ -103,8 +142,19 @@ export function AttachedSources({ projectId }: { projectId: string }) {
                     <Badge variant="outline" className="text-[9px]">
                       {s.table_count} tables
                     </Badge>
+                    {s.available === 0 && (
+                      <Badge variant="destructive" className="gap-1 text-[9px]">
+                        <AlertTriangle className="h-2.5 w-2.5" /> unavailable
+                      </Badge>
+                    )}
                   </div>
                   <div className="truncate text-[10px] text-muted-foreground">{s.file_path}</div>
+                  {s.available === 0 && (
+                    <div className="truncate text-[10px] text-destructive">
+                      {s.unavailable_reason} — its tables cannot be queried until the file is
+                      back. Restore it and press Refresh, or detach it.
+                    </div>
+                  )}
                 </div>
               </div>
               <AlertDialog>

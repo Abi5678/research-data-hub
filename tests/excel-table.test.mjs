@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { worksheetToTable } = require("../electron/excel-table.cjs");
+const { worksheetToTable, dedupeHeaders } = require("../electron/excel-table.cjs");
 
 async function parseFile(filePath) {
   const workbook = new ExcelJS.Workbook();
@@ -74,6 +74,31 @@ describe("excel-table header detection", () => {
       const [sheet] = await parseFile(tmp);
       expect(sheet.table.headers).toEqual(["sample_id", "air_voids"]);
       expect(sheet.table.rows).toEqual([{ sample_id: "6001", air_voids: "4.2" }]);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it("keeps a column whose name collides with a generated suffix", async () => {
+    // Deduping by occurrence count renamed the second `a` to `a_2`, which is
+    // already the third column's real name. Rows are keyed by header, so the
+    // third column's values landed on top of the second one's and were lost.
+    expect(dedupeHeaders(["a", "a", "a_2"])).toEqual(["a", "a_2", "a_2_2"]);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("collide");
+    ["a", "a", "a_2"].forEach((h, i) => {
+      ws.getRow(1).getCell(i + 1).value = h;
+    });
+    [10, 20, 30].forEach((v, i) => {
+      ws.getRow(2).getCell(i + 1).value = v;
+    });
+    const tmp = path.join(os.tmpdir(), `rdh-collide-${Date.now()}.xlsx`);
+    await wb.xlsx.writeFile(tmp);
+    try {
+      const [sheet] = await parseFile(tmp);
+      expect(sheet.table.headers).toEqual(["a", "a_2", "a_2_2"]);
+      expect(Object.values(sheet.table.rows[0])).toEqual(["10", "20", "30"]);
     } finally {
       fs.unlinkSync(tmp);
     }

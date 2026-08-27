@@ -24,8 +24,11 @@ export type ParsedCsv = {
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
-const INT_RE = /^-?\d+$/;
-const FLOAT_RE = /^-?\d+\.\d+$/;
+const INT_RE = /^[+-]?\d+$/;
+// Matches 1.5, .5, 5., +1.23E+05, 1e-3. Instrument and LIMS exports routinely
+// write moduli and strains in scientific notation; a decimal-only pattern
+// silently demotes those columns to text.
+const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const BOOLISH = new Set(["true", "false", "0", "1"]);
 
 function inferKind(colName: string, values: string[]): ColumnKind {
@@ -42,7 +45,7 @@ function inferKind(colName: string, values: string[]): ColumnKind {
     seen++;
     if (BOOLISH.has(v.toLowerCase())) bools++;
     if (INT_RE.test(v)) ints++;
-    else if (FLOAT_RE.test(v)) floats++;
+    else if (NUMBER_RE.test(v)) floats++;
     if (ISO_DATETIME.test(v)) datetimes++;
     else if (ISO_DATE.test(v)) dates++;
   }
@@ -141,17 +144,35 @@ export function parseTabularText(filename: string, text: string): ParsedCsv {
   return parseCsv(text, ",");
 }
 
-export type CoerceResult =
-  | { ok: true; row: Record<string, string | null> }
-  | { ok: false; reason: string };
+export type BadCell = { column: string; value: string; reason: string };
+
+export type CoerceResult = {
+  row: Record<string, string | null>;
+  /** Cells that could not be parsed. They are stored as NULL, not dropped. */
+  bad: BadCell[];
+};
 
 // Validate a raw row against a column schema. Return string-encoded values;
 // the DB casts each one on insert. Empty → null.
+//
+// An unparseable cell nulls that cell and is reported in `bad`; it never
+// discards the row. One messy cell must not throw away every other
+// measurement recorded on the same line.
 export function coerceRow(
   raw: Record<string, string>,
   columns: ColumnSchema[],
 ): CoerceResult {
   const out: Record<string, string | null> = {};
+  const bad: BadCell[] = [];
+  const reject = (col: ColumnSchema, value: string, expected: string) => {
+    out[col.name] = null;
+    bad.push({
+      column: col.name,
+      value,
+      reason: `"${col.name}" expects ${expected}, got "${value}"`,
+    });
+  };
+
   for (const col of columns) {
     const src = raw[col.original_name ?? col.name];
     const v = src == null ? "" : String(src).trim();
@@ -161,29 +182,51 @@ export function coerceRow(
     }
     switch (col.type) {
       case "integer": {
-        if (!INT_RE.test(v)) return { ok: false, reason: `"${col.name}" expects integer, got "${v}"` };
-        out[col.name] = v;
+        // Pass plain digits through verbatim so long ids keep full precision.
+        // Drop a leading "+": the server's bind step only accepts /^-?\d+$/.
+        if (INT_RE.test(v)) {
+          out[col.name] = v.replace(/^\+/, "");
+          break;
+        }
+        // Spreadsheets write whole numbers as "12.0" or "1e3"; accept those.
+        const n = NUMBER_RE.test(v) ? Number(v) : NaN;
+        if (!Number.isSafeInteger(n)) {
+          reject(col, v, "integer");
+          break;
+        }
+        out[col.name] = String(n);
         break;
       }
       case "double precision": {
-        if (!INT_RE.test(v) && !FLOAT_RE.test(v)) return { ok: false, reason: `"${col.name}" expects number, got "${v}"` };
+        if (!NUMBER_RE.test(v)) {
+          reject(col, v, "number");
+          break;
+        }
         out[col.name] = v;
         break;
       }
       case "boolean": {
         const lv = v.toLowerCase();
-        if (!BOOLISH.has(lv)) return { ok: false, reason: `"${col.name}" expects boolean, got "${v}"` };
+        if (!BOOLISH.has(lv)) {
+          reject(col, v, "boolean");
+          break;
+        }
         out[col.name] = lv === "true" || lv === "1" ? "true" : "false";
         break;
       }
       case "date": {
-        if (!ISO_DATE.test(v)) return { ok: false, reason: `"${col.name}" expects YYYY-MM-DD date, got "${v}"` };
+        if (!ISO_DATE.test(v)) {
+          reject(col, v, "YYYY-MM-DD date");
+          break;
+        }
         out[col.name] = v;
         break;
       }
       case "timestamptz": {
-        if (!ISO_DATETIME.test(v) && !ISO_DATE.test(v))
-          return { ok: false, reason: `"${col.name}" expects timestamp, got "${v}"` };
+        if (!ISO_DATETIME.test(v) && !ISO_DATE.test(v)) {
+          reject(col, v, "timestamp");
+          break;
+        }
         out[col.name] = v;
         break;
       }
@@ -191,7 +234,23 @@ export function coerceRow(
         out[col.name] = v;
     }
   }
-  return { ok: true, row: out };
+  return { row: out, bad };
+}
+
+/**
+ * Render a key value as text so two sides of a comparison can be matched.
+ * They are written differently: a value read back from the database is already
+ * typed — a numeric key arrives as the number 1 — while a value coming from a
+ * CSV is a string. Under a numeric column "1.0" and " 1" therefore have to
+ * match a stored 1; under a text column they must not, because "0001" is a
+ * distinct code.
+ */
+export function keyText(value: unknown, kind: ColumnKind): string {
+  if (value == null) return "";
+  const s = String(value).trim();
+  if (s === "" || (kind !== "integer" && kind !== "double precision")) return s;
+  const n = Number(s);
+  return Number.isFinite(n) ? String(n) : s;
 }
 
 export function toCsv(rows: Record<string, unknown>[], columns: string[]): string {

@@ -36,7 +36,14 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { coerceRow, parseCsv, type ColumnKind, type ColumnSchema, type ParsedCsv } from "@/lib/csv";
+import {
+  coerceRow,
+  keyText,
+  parseCsv,
+  type ColumnKind,
+  type ColumnSchema,
+  type ParsedCsv,
+} from "@/lib/csv";
 import type { ProjectTemplate, TemplateTable } from "@/lib/templates";
 import { isSpreadsheetFile, isXlsxFile, parseXlsx, type XlsxSheet } from "@/lib/xlsx";
 
@@ -62,7 +69,7 @@ type DatasetRow = {
   id: string;
   display_name: string;
   table_name: string;
-  row_count: number;
+  row_count: number | null;
   column_schema: ColumnSchema[];
 };
 
@@ -80,10 +87,17 @@ type Stage = "pick" | "sheet" | "configure" | "validating" | "report" | "uploadi
 
 type Report = {
   ok: Record<string, string | null>[];
-  invalid: { line: number; reason: string }[];
+  /** Cells stored as NULL because they failed their column type. */
+  repaired: { line: number; reason: string }[];
   orphan: { line: number; column: string; value: string }[];
   duplicate: { line: number; key: string }[];
+  /** Checks that could not be run in full, so the counts above understate. */
+  warnings: string[];
 };
+
+// datasetColumnValues caps its result, and the SELECT DISTINCT behind it has no
+// ORDER BY, so past this many distinct values the set is an arbitrary subset.
+const KEY_SET_LIMIT = 200000;
 
 function norm(s: string) {
   return s
@@ -260,38 +274,67 @@ export function MappedDatasetUploadDialog({
       const targetCols = effectiveTargetColumns(mappings, boundDataset, mode);
       if (targetCols.length === 0) throw new Error("No columns mapped");
 
+      const warnings: string[] = [];
+
       // For FK validation: which mapped columns are template FKs?
-      const fkChecks: { csvHeader: string; targetName: string; validValues: Set<string> }[] = [];
+      const fkChecks: {
+        csvHeader: string;
+        targetName: string;
+        kind: ColumnKind;
+        validValues: Set<string>;
+      }[] = [];
       for (const fk of templateTable.fks ?? []) {
         const parentDsId = bindings[fk.references.table];
         if (!parentDsId) continue; // parent not yet uploaded
         const parentDs = datasets.find((d) => d.id === parentDsId);
         if (!parentDs) continue;
-        const parentCol = parentDs.column_schema.find((c) => c.name === fk.references.column)?.name;
+        const parentCol = parentDs.column_schema.find((c) => c.name === fk.references.column);
         if (!parentCol) continue;
         const mapping = mappings.find((m) => m.action !== "skip" && m.targetName === fk.column);
         if (!mapping) continue;
-        setProgressMsg(`Fetching valid ${fk.references.table}.${parentCol} values…`);
-        const data = await api.datasetColumnValues(parentDsId, [parentCol], 200000);
-        const values = new Set<string>(
-          data.map((r) => (r[parentCol] == null ? "" : String(r[parentCol]))),
-        );
-        fkChecks.push({ csvHeader: mapping.csv, targetName: fk.column, validValues: values });
+        setProgressMsg(`Fetching valid ${fk.references.table}.${parentCol.name} values…`);
+        const data = await api.datasetColumnValues(parentDsId, [parentCol.name], KEY_SET_LIMIT);
+        if (data.length >= KEY_SET_LIMIT) {
+          // An incomplete set of valid values makes almost every row look like an
+          // orphan, and orphans are excluded by default — so skip the check and
+          // say so, rather than quietly dropping good rows.
+          warnings.push(
+            `${fk.references.table}.${parentCol.name} has at least ${KEY_SET_LIMIT.toLocaleString()} distinct values, more than can be loaded for checking, so the foreign key on "${fk.column}" was not verified.`,
+          );
+          continue;
+        }
+        const values = new Set<string>(data.map((r) => keyText(r[parentCol.name], parentCol.type)));
+        fkChecks.push({
+          csvHeader: mapping.csv,
+          targetName: fk.column,
+          kind: parentCol.type,
+          validValues: values,
+        });
       }
 
       // For dedup: fetch existing unique-key combos (append only)
       const seenKeys = new Set<string>();
+      const keyKinds = uniqueKeys.map(
+        (k) => targetCols.find((c) => c.name === k)?.type ?? ("text" as ColumnKind),
+      );
       if (uniqueKeys.length > 0 && mode === "append" && boundDatasetId) {
         setProgressMsg("Fetching existing keys for de-duplication…");
-        const data = await api.datasetColumnValues(boundDatasetId, uniqueKeys, 200000);
+        const data = await api.datasetColumnValues(boundDatasetId, uniqueKeys, KEY_SET_LIMIT);
+        if (data.length >= KEY_SET_LIMIT) {
+          // Unlike the FK case this still runs: a partial set catches some
+          // duplicates, and missing one inserts a row rather than dropping one.
+          warnings.push(
+            `The target table has at least ${KEY_SET_LIMIT.toLocaleString()} distinct key combinations, more than can be loaded at once, so duplicates against the rest of the table were not detected.`,
+          );
+        }
         for (const r of data) {
-          seenKeys.add(uniqueKeys.map((k) => (r[k] == null ? "" : String(r[k]))).join("\u241f"));
+          seenKeys.add(uniqueKeys.map((k, ki) => keyText(r[k], keyKinds[ki])).join("\u241f"));
         }
       }
 
       // Iterate rows
       setProgressMsg("Validating rows…");
-      const rep: Report = { ok: [], invalid: [], orphan: [], duplicate: [] };
+      const rep: Report = { ok: [], repaired: [], orphan: [], duplicate: [], warnings };
       const inBatchSeen = new Set<string>();
 
       parsed.rows.forEach((raw, i) => {
@@ -303,16 +346,22 @@ export function MappedDatasetUploadDialog({
           remapped[m.targetName] = raw[m.csv] ?? "";
         }
         const res = coerceRow(remapped, targetCols);
-        if (!res.ok) {
-          rep.invalid.push({ line, reason: res.reason });
-          return;
-        }
+        // A cell that fails its type is stored as NULL, not a reason to throw
+        // away the rest of the row — the row still goes through FK and dedup.
+        for (const b of res.bad) rep.repaired.push({ line, reason: b.reason });
         // FK check
         let orphan = false;
         for (const chk of fkChecks) {
-          const v = raw[chk.csvHeader] == null ? "" : String(raw[chk.csvHeader]).trim();
+          // Compare what actually gets inserted, not the raw cell: the parent
+          // stores a typed value, and coerceRow has already rewritten "1.0" to
+          // the "1" that will land in the column.
+          const v = keyText(res.row[chk.targetName], chk.kind);
           if (v !== "" && !chk.validValues.has(v)) {
-            rep.orphan.push({ line, column: chk.targetName, value: v });
+            rep.orphan.push({
+              line,
+              column: chk.targetName,
+              value: String(raw[chk.csvHeader] ?? "").trim(),
+            });
             orphan = true;
             break;
           }
@@ -320,9 +369,7 @@ export function MappedDatasetUploadDialog({
         if (orphan && !includeOrphans) return;
         // Dedup check
         if (uniqueKeys.length > 0) {
-          const key = uniqueKeys
-            .map((k) => (res.row[k] == null ? "" : String(res.row[k])))
-            .join("\u241f");
+          const key = uniqueKeys.map((k, ki) => keyText(res.row[k], keyKinds[ki])).join("\u241f");
           if (seenKeys.has(key) || inBatchSeen.has(key)) {
             rep.duplicate.push({ line, key });
             if (!includeDuplicates) return;
@@ -804,8 +851,8 @@ function ConfigureStage({
           <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
           <span>
             Target dataset <span className="font-semibold">{boundDataset.display_name}</span> has{" "}
-            {boundDataset.row_count.toLocaleString()} rows and {boundDataset.column_schema.length}{" "}
-            columns.
+            {boundDataset.row_count !== null && <>{boundDataset.row_count.toLocaleString()} rows and </>}
+            {boundDataset.column_schema.length} columns.
           </span>
         </div>
       )}
@@ -971,7 +1018,10 @@ function ConfigureStage({
                   </span>
                   {parentDs ? (
                     <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                      will validate against {parentDs.row_count.toLocaleString()} rows
+                      will validate against{" "}
+                      {parentDs.row_count === null
+                        ? "its combined rows"
+                        : `${parentDs.row_count.toLocaleString()} rows`}
                     </span>
                   ) : (
                     <span className="text-amber-700">parent not loaded — skipped</span>
@@ -1054,13 +1104,28 @@ function ReportStage({
     <div className="space-y-3">
       <div className="grid gap-2 sm:grid-cols-4">
         <Stat label="Rows OK" value={report.ok.length} tone="ok" />
-        <Stat label="Invalid" value={report.invalid.length} tone="warn" />
+        <Stat label="Repaired" value={report.repaired.length} tone="warn" />
         <Stat label="Orphan FK" value={report.orphan.length} tone="warn" />
         <Stat label="Duplicates" value={report.duplicate.length} tone="warn" />
       </div>
       <div className="text-[11px] text-muted-foreground">
         {okPct}% of {totalParsed.toLocaleString()} rows will be imported.
       </div>
+
+      {/* A check that did not run is not a check that passed — say which. */}
+      {report.warnings.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+          <div className="font-semibold">
+            <AlertTriangle className="mr-1 inline h-3 w-3" />
+            Some checks could not be completed
+          </div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {report.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {report.orphan.length > 0 && (
         <details className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
@@ -1086,19 +1151,19 @@ function ReportStage({
         </details>
       )}
 
-      {report.invalid.length > 0 && (
+      {report.repaired.length > 0 && (
         <details className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
           <summary className="cursor-pointer font-semibold">
             <AlertTriangle className="mr-1 inline h-3 w-3" />
-            {report.invalid.length} rows fail type checks (always skipped)
+            {report.repaired.length} cells failed type checks (stored as empty)
           </summary>
           <ul className="mt-2 max-h-32 space-y-0.5 overflow-auto">
-            {report.invalid.slice(0, 20).map((o, i) => (
+            {report.repaired.slice(0, 20).map((o, i) => (
               <li key={i}>
                 Line {o.line}: {o.reason}
               </li>
             ))}
-            {report.invalid.length > 20 && <li>…and {report.invalid.length - 20} more</li>}
+            {report.repaired.length > 20 && <li>…and {report.repaired.length - 20} more</li>}
           </ul>
         </details>
       )}

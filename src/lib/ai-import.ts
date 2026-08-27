@@ -63,13 +63,21 @@ export type ImportHistoryRow = {
   mode: string;
   report: {
     mode?: string;
-    results?: { key: string; display_name: string; inserted: number; invalid: number }[];
+    results?: {
+      key: string;
+      display_name: string;
+      inserted: number;
+      invalid: number;
+      repaired?: number;
+    }[];
     skippedSources?: { file: string; reason: string }[];
     quarantine?: unknown[];
     totals?: {
       tables: number;
       inserted: number;
       invalid: number;
+      /** Cells stored as NULL because they failed their column type. */
+      repaired?: number;
       skippedSources: number;
     };
   };
@@ -78,7 +86,13 @@ export type ImportHistoryRow = {
 
 export type ExecuteImportResult = {
   projectId: string;
-  results: { key: string; display_name: string; inserted: number; invalid: number }[];
+  results: {
+    key: string;
+    display_name: string;
+    inserted: number;
+    invalid: number;
+    repaired?: number;
+  }[];
   skippedSources?: { file: string; reason: string }[];
   quarantine?: unknown[];
   report?: ImportHistoryRow["report"];

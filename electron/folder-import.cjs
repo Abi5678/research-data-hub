@@ -129,8 +129,11 @@ const NON_TABULAR_HINT_RE = /\.(pdf|docx?|pptx?|png|jpe?g|gif|webp|zip|rar|7z|bi
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
-const INT_RE = /^-?\d+$/;
-const FLOAT_RE = /^-?\d+\.\d+$/;
+const INT_RE = /^[+-]?\d+$/;
+// Matches 1.5, .5, 5., +1.23E+05, 1e-3. Instrument and LIMS exports routinely
+// write moduli and strains in scientific notation; a decimal-only pattern
+// silently demotes those columns to text.
+const NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const BOOLISH = new Set(["true", "false", "0", "1"]);
 
 function inferKind(colName, values) {
@@ -147,7 +150,7 @@ function inferKind(colName, values) {
     seen++;
     if (BOOLISH.has(v.toLowerCase())) bools++;
     if (INT_RE.test(v)) ints++;
-    else if (FLOAT_RE.test(v)) floats++;
+    else if (NUMBER_RE.test(v)) floats++;
     if (ISO_DATETIME.test(v)) datetimes++;
     else if (ISO_DATE.test(v)) dates++;
   }
@@ -165,10 +168,16 @@ function coerceValue(type, raw) {
   const v = raw == null ? "" : String(raw).trim();
   if (v === "") return { ok: true, value: null };
   switch (type) {
-    case "integer":
-      return INT_RE.test(v) ? { ok: true, value: v } : { ok: false };
+    case "integer": {
+      // Plain digits pass through verbatim so long ids keep full precision.
+      // Drop a leading "+": the server's bind step only accepts /^-?\d+$/.
+      if (INT_RE.test(v)) return { ok: true, value: v.replace(/^\+/, "") };
+      // Spreadsheets write whole numbers as "12.0" or "1e3"; accept those.
+      const n = NUMBER_RE.test(v) ? Number(v) : NaN;
+      return Number.isSafeInteger(n) ? { ok: true, value: String(n) } : { ok: false };
+    }
     case "double precision":
-      return INT_RE.test(v) || FLOAT_RE.test(v) ? { ok: true, value: v } : { ok: false };
+      return NUMBER_RE.test(v) ? { ok: true, value: v } : { ok: false };
     case "boolean": {
       const lv = v.toLowerCase();
       if (!BOOLISH.has(lv)) return { ok: false };
@@ -184,11 +193,21 @@ function coerceValue(type, raw) {
 }
 
 function dedupeHeaders(rawHeaders) {
-  const seen = new Map();
+  // Counting occurrences per name is not enough: headers ['a','a','a_2'] made
+  // the second `a` into `a_2`, colliding with the real third column. Rows are
+  // keyed by header, so that column's data was silently overwritten. Probe for
+  // a suffix nothing has taken yet instead.
+  const used = new Set();
   return rawHeaders.map((h) => {
-    const n = seen.get(h) ?? 0;
-    seen.set(h, n + 1);
-    return n === 0 ? h : `${h}_${n + 1}`;
+    if (!used.has(h)) {
+      used.add(h);
+      return h;
+    }
+    let n = 2;
+    while (used.has(`${h}_${n}`)) n += 1;
+    const name = `${h}_${n}`;
+    used.add(name);
+    return name;
   });
 }
 
@@ -627,7 +646,9 @@ async function executeImportPlanInner(projectId, folder, tables, onProgress, cre
     const schema = ds.column_schema;
 
     let inserted = 0;
-    let invalid = 0;
+    // Cells stored as NULL because they failed their column type. Rows are
+    // never dropped here, so there is no row-level invalid count.
+    let repaired = 0;
     for (const source of table.sources) {
       let parsed;
       try {
@@ -645,7 +666,6 @@ async function executeImportPlanInner(projectId, folder, tables, onProgress, cre
       const batch = [];
       for (const raw of parsed.rows) {
         const row = {};
-        let ok = true;
         const bad = {};
         for (let i = 0; i < schema.length; i++) {
           const planCol = table.columns[i];
@@ -660,21 +680,25 @@ async function executeImportPlanInner(projectId, folder, tables, onProgress, cre
             rawVal = raw[planCol ? planCol.source_header : sc.original_name];
           }
           const res = coerceValue(sc.type, rawVal);
-          if (!res.ok) {
-            ok = false;
+          // A cell that fails its column type is stored as NULL and recorded in
+          // the quarantine. Discarding the whole row would throw away every
+          // other measurement recorded on the same line.
+          if (res.ok) row[sc.name] = res.value;
+          else {
+            row[sc.name] = null;
             bad[sc.name] = String(rawVal ?? "");
-            break;
           }
-          row[sc.name] = res.value;
         }
-        if (ok) batch.push(row);
-        else {
-          invalid++;
+        batch.push(row);
+        const badCols = Object.keys(bad);
+        if (badCols.length > 0) {
+          repaired += badCols.length;
           if (quarantine.length < 500) {
             quarantine.push({
               table: table.key,
               file: source.file,
               sheet: source.sheet,
+              columns: badCols,
               values: Object.keys(raw).length ? raw : bad,
             });
           }
@@ -690,7 +714,8 @@ async function executeImportPlanInner(projectId, folder, tables, onProgress, cre
       display_name: table.display_name,
       dataset_id,
       inserted,
-      invalid,
+      invalid: 0,
+      repaired,
       columns: schema,
     });
   }
@@ -744,6 +769,7 @@ async function executeImportPlanInner(projectId, folder, tables, onProgress, cre
       tables: results.length,
       inserted: results.reduce((s, r) => s + r.inserted, 0),
       invalid: results.reduce((s, r) => s + r.invalid, 0),
+      repaired: results.reduce((s, r) => s + (r.repaired || 0), 0),
       skippedSources: skippedSources.length,
     },
   };

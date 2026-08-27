@@ -29,11 +29,86 @@ export type Dataset = {
   table_name: string;
   display_name: string;
   source_filename: string | null;
-  row_count: number;
+  /** Null on a combined dataset: counting a live view re-runs its joins, so the
+   *  number is fetched on demand with `datasetRowCount`, never stored. */
+  row_count: number | null;
   column_schema: ColumnSchema[];
   created_at: string;
   /** 1 when the dataset is a view over an attached database — query only. */
   read_only?: 0 | 1;
+  /** Set when the attached file backing this dataset could not be opened. */
+  unavailable_reason?: string | null;
+  /** Set only on a combined dataset: the recipe its view is generated from. */
+  recipe?: CombineRecipe | null;
+};
+
+/** Where one output column's values come from, within one branch. */
+export type CombineSource = {
+  /** "spine", or the id of a join in the same branch. */
+  from: string;
+  column: string;
+};
+
+export type CombineJoin = {
+  id: string;
+  /** table_name being joined in. */
+  table: string;
+  /** "spine" or an earlier join's id — what this one hangs off. */
+  leftFrom?: string;
+  leftColumn: string;
+  rightColumn: string;
+  /** LEFT by default, because INNER silently drops unmatched spine rows. */
+  type?: "left" | "inner";
+  /** Native compare is indexable; text compare is stricter but forces a scan. */
+  keyCompare?: "native" | "text";
+};
+
+/**
+ * One dataset feeding a combined dataset: a spine table, any joins hanging off
+ * it, and how its columns land in the shared output shape. Joins add columns;
+ * extra branches add rows.
+ */
+export type CombineBranch = {
+  id: string;
+  label?: string;
+  /** table_name every join in this branch hangs off. */
+  spine: string;
+  joins?: CombineJoin[];
+  /** output column name -> where it comes from. Null means blank for this branch. */
+  map: Record<string, CombineSource | null>;
+};
+
+export type CombineRecipe = {
+  version: 1;
+  branches: CombineBranch[];
+  columns: { name: string; type: ColumnKind }[];
+  /** Add a source_dataset column naming which branch each row came from. */
+  provenance?: boolean;
+};
+
+export type CombineFinding = {
+  /** "block" cannot be saved; "warn" can, once the user has seen it. */
+  level: "block" | "warn";
+  code: string;
+  message: string;
+  detail?: Record<string, unknown>;
+};
+
+export type CombinePreflight = {
+  ok: boolean;
+  findings: CombineFinding[];
+  columns: ColumnSchema[];
+  branches: {
+    id: string;
+    label: string;
+    spine: string;
+    spineRows: number | null;
+    /** Null when the sources were too large to count exactly. */
+    rows: number | null;
+    unmapped: string[];
+  }[];
+  renames: { from: string; to: string }[];
+  estimatedRows: number | null;
 };
 
 export type AttachedSource = {
@@ -43,6 +118,9 @@ export type AttachedSource = {
   file_path: string;
   created_at: string;
   table_count: number;
+  /** 0 when the file could not be opened this session — its tables cannot be queried. */
+  available?: 0 | 1;
+  unavailable_reason?: string | null;
 };
 
 export type SavedQuery = {
@@ -117,7 +195,8 @@ export type LocalApi = {
     projectId: string,
     sql: string,
     limit?: number,
-  ): Promise<{ rows: Record<string, unknown>[]; columns: string[] }>;
+    /** `truncated` is true when the result hit `limit` and more rows exist. */
+  ): Promise<{ rows: Record<string, unknown>[]; columns: string[]; truncated?: boolean }>;
   listSavedQueries(projectId: string): Promise<SavedQuery[]>;
   insertSavedQuery(projectId: string, name: string, sqlText: string): Promise<void>;
   listAnalysisViews(projectId: string): Promise<AnalysisView[]>;
@@ -140,7 +219,40 @@ export type LocalApi = {
     filePath: string,
   ): Promise<{ id: string; alias: string; file_path: string; table_count: number }>;
   listAttachedSources(projectId: string): Promise<AttachedSource[]>;
+  /** Re-read attached files: new/dropped tables, fresh row counts, missing files. */
+  refreshAttachedSources(
+    projectId: string,
+  ): Promise<{ refreshed: number; unavailable: { alias: string; reason: string }[] }>;
   detachSource(sourceId: string): Promise<void>;
+  /** Desktop only — combined datasets are SQLite temp views. */
+  previewCombinedSql(projectId: string, recipe: CombineRecipe): Promise<string>;
+  /** Everything that could make the result quietly wrong, checked against the
+   *  real data. `datasetId` is the combined dataset being edited, if any. */
+  preflightCombine(
+    projectId: string,
+    recipe: CombineRecipe,
+    datasetId?: string | null,
+  ): Promise<CombinePreflight>;
+  createCombinedDataset(args: {
+    projectId: string;
+    displayName: string;
+    recipe: CombineRecipe;
+  }): Promise<{ dataset_id: string; table_name: string }>;
+  updateCombinedDataset(
+    datasetId: string,
+    args: { displayName?: string; recipe?: CombineRecipe },
+  ): Promise<{ dataset_id: string; table_name: string }>;
+  /** Combined datasets built on this table — what blocks removing it. */
+  combinedDependents(tableName: string): Promise<{ id: string; display_name: string }[]>;
+  /** Copy a combined view's current rows into an ordinary table. The snapshot
+   *  stops following its sources; the combination itself is left in place. */
+  freezeCombinedDataset(
+    datasetId: string,
+    args?: { displayName?: string },
+  ): Promise<{ dataset_id: string; table_name: string; row_count: number }>;
+  /** Counted now for a combined view, read from storage otherwise. Null when a
+   *  combined view is currently unreadable. */
+  datasetRowCount(datasetId: string): Promise<number | null>;
   testLlmConnection(): Promise<{ model: string; reply: string; mode?: string }>;
   /** Free-form chat; the Ask tab builds the messages. */
   llmChat(
@@ -150,7 +262,8 @@ export type LocalApi = {
   isAiAssistAvailable(): Promise<boolean>;
   cloudNimAllowed(): Promise<boolean>;
   backupDatabase(): Promise<string | null>;
-  restoreDatabase(): Promise<string | null>;
+  /** `previous` is where the replaced database was copied, so a wrong pick is recoverable. */
+  restoreDatabase(): Promise<{ restored: string; previous: string | null } | null>;
   getDatabasePath(): Promise<string | null>;
   pickImportFolder(): Promise<string | null>;
   analyzeFolder(

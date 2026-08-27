@@ -20,8 +20,10 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import type { ColumnSchema } from "@/lib/csv";
+import type { CombineRecipe } from "@/lib/api";
 import { DatasetUploadDialog } from "@/components/project/dataset-upload";
 import { AttachedSources } from "@/components/project/attached-sources";
+import { CombineBuilderDialog } from "@/components/project/combine-builder";
 import { QueryTab } from "@/components/project/query-tab";
 import { BrowseTab } from "@/components/project/browse-tab";
 import { AnalyzeTab } from "@/components/project/analyze-tab";
@@ -43,6 +45,7 @@ import {
   Layers,
   ListTree,
   Search,
+  Snowflake,
   Clock,
   UploadCloud,
   Sparkles,
@@ -80,10 +83,14 @@ type DatasetRow = {
   display_name: string;
   source_filename: string | null;
   table_name: string;
-  row_count: number;
+  /** Null on a combined dataset: its rows are counted on demand, never stored. */
+  row_count: number | null;
   created_at: string;
   column_schema: ColumnSchema[];
   read_only?: 0 | 1;
+  unavailable_reason?: string | null;
+  /** Non-null only on a combined dataset — the recipe its view is built from. */
+  recipe?: CombineRecipe | null;
 };
 
 function ProjectDetailPage() {
@@ -321,7 +328,9 @@ function OverviewTab({
   datasets: DatasetRow[];
   onGoToTab: (tab: string) => void;
 }) {
-  const totalRows = datasets.reduce((s, d) => s + d.row_count, 0);
+  // Combined datasets are excluded: their rows already live in the sources
+  // below them, so counting both would report the same rows twice.
+  const totalRows = datasets.reduce((s, d) => s + (d.recipe ? 0 : (d.row_count ?? 0)), 0);
   const meta = (project.template_meta ?? {}) as TemplateMeta;
   // AI folder imports store their generated schema in template_meta.
   const template = meta.ai_template ?? getTemplate(project.template_key);
@@ -427,7 +436,8 @@ function OverviewTab({
                         {d.display_name}
                       </div>
                       <div className="truncate text-[10px] text-muted-foreground">
-                        {d.row_count.toLocaleString()} rows · {d.column_schema.length} cols
+                        {d.row_count === null ? "combined" : `${d.row_count.toLocaleString()} rows`}{" "}
+                        · {d.column_schema.length} cols
                       </div>
                     </div>
                     <ArrowLeft className="h-3.5 w-3.5 rotate-180 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
@@ -451,7 +461,8 @@ function OverviewTab({
                         {d.display_name}
                       </div>
                       <div className="truncate text-[11px] text-muted-foreground">
-                        {d.column_schema.length} columns • {d.row_count.toLocaleString()} rows
+                        {d.column_schema.length} columns •{" "}
+                        {d.row_count === null ? "combined" : `${d.row_count.toLocaleString()} rows`}
                       </div>
                     </div>
                     <span className="text-[11px] text-muted-foreground">
@@ -496,6 +507,41 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * The size of a combined dataset, counted only when asked for.
+ *
+ * A combined dataset is a live view, so counting it re-runs every join
+ * underneath. That is affordable once, on a click; it is not affordable on
+ * every render of a list that may hold a dozen of them.
+ */
+function CombinedRowCount({ datasetId }: { datasetId: string }) {
+  const [asked, setAsked] = useState(false);
+  const count = useQuery({
+    queryKey: ["dataset-row-count", datasetId],
+    queryFn: () => api.datasetRowCount(datasetId),
+    enabled: asked,
+    retry: false,
+  });
+
+  if (!asked) {
+    return (
+      <button
+        type="button"
+        onClick={() => setAsked(true)}
+        className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+      >
+        rows read live from its sources — count them
+      </button>
+    );
+  }
+  if (count.isPending) return <span>counting rows…</span>;
+  // An unreadable or errored view says what it is rather than showing a zero.
+  if (count.isError || count.data === null || count.data === undefined) {
+    return <span>rows read live from its sources</span>;
+  }
+  return <span>{count.data.toLocaleString()} rows, counted just now</span>;
+}
+
 function DatasetsTab({
   projectId,
   projectCode,
@@ -528,6 +574,15 @@ function DatasetsTab({
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed"),
   });
+  const freeze = useMutation({
+    mutationFn: async (d: DatasetRow) => api.freezeCombinedDataset(d.id),
+    onSuccess: ({ row_count }) => {
+      toast.success(`Frozen — ${row_count.toLocaleString()} rows copied into a table of their own`);
+      qc.invalidateQueries({ queryKey: ["datasets", projectId] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Failed"),
+  });
   const exportOne = useMutation({
     mutationFn: async (d: DatasetRow) => {
       const limit = 50000;
@@ -540,13 +595,17 @@ function DatasetsTab({
         columns: cols,
         label: d.display_name,
       });
-      return { exported: rows.length, total: d.row_count };
+      // A combined dataset has no stored total to compare against, so the
+      // limit itself is the signal: a full page back means there may be more.
+      return { exported: rows.length, total: d.row_count, capped: rows.length >= limit };
     },
-    onSuccess: ({ exported, total }) => {
-      if (exported < total) {
+    onSuccess: ({ exported, total, capped }) => {
+      if (total !== null && exported < total) {
         toast.warning(
           `Exported ${exported.toLocaleString()} of ${total.toLocaleString()} rows (server limit)`,
         );
+      } else if (total === null && capped) {
+        toast.warning(`Exported the first ${exported.toLocaleString()} rows (server limit)`);
       } else {
         toast.success(`Exported ${exported.toLocaleString()} rows`);
       }
@@ -564,6 +623,20 @@ function DatasetsTab({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <CombineBuilderDialog
+            projectId={projectId}
+            datasets={datasets}
+            trigger={
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={datasets.length === 0}
+              >
+                <Layers className="h-3.5 w-3.5" /> Combine datasets
+              </Button>
+            }
+          />
           <Button asChild variant="outline" size="sm" className="gap-1.5">
             <Link to="/import-folder" search={{ projectId }}>
               <FolderOpen className="h-3.5 w-3.5" /> Import folder
@@ -612,14 +685,41 @@ function DatasetsTab({
                     </div>
                     <h3 className="mt-0.5 flex items-center gap-2 truncate text-base font-bold text-foreground">
                       {d.display_name}
-                      {d.read_only === 1 && (
+                      {d.recipe ? (
                         <Badge variant="outline" className="shrink-0 text-[9px]">
-                          attached · read-only
+                          combined · live view
+                        </Badge>
+                      ) : (
+                        d.read_only === 1 && (
+                          <Badge variant="outline" className="shrink-0 text-[9px]">
+                            attached · read-only
+                          </Badge>
+                        )
+                      )}
+                      {d.unavailable_reason && (
+                        <Badge variant="destructive" className="shrink-0 text-[9px]">
+                          unavailable
                         </Badge>
                       )}
                     </h3>
+                    {/* Named here rather than left to fail as a raw "no such table". */}
+                    {d.unavailable_reason && (
+                      <p className="mt-1 text-[11px] text-destructive">
+                        {d.unavailable_reason} —{" "}
+                        {d.recipe
+                          ? "edit how it is combined, or restore the dataset it reads from."
+                          : "refresh or detach it under Attached databases."}
+                      </p>
+                    )}
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                      <span>{d.row_count.toLocaleString()} rows</span>
+                      {/* A combined view stores no row count: it is re-read from
+                          its sources on every query, so a stored number would go
+                          stale the moment a source changed. */}
+                      {d.recipe ? (
+                        <CombinedRowCount datasetId={d.id} />
+                      ) : (
+                        <span>{(d.row_count ?? 0).toLocaleString()} rows</span>
+                      )}
                       <span>•</span>
                       <span>{d.column_schema.length} columns</span>
                       {d.source_filename && (
@@ -640,7 +740,63 @@ function DatasetsTab({
                     >
                       <Download className="h-3.5 w-3.5" /> Export CSV
                     </Button>
-                    {d.read_only !== 1 && (
+                    {d.recipe && (
+                      <CombineBuilderDialog
+                        projectId={projectId}
+                        datasets={datasets}
+                        editing={d}
+                        trigger={
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            <Layers className="h-3.5 w-3.5" /> Edit combination
+                          </Button>
+                        }
+                      />
+                    )}
+                    {/* The escape hatch from live to fixed. A live view re-runs
+                        its joins on every query, which stops being affordable
+                        somewhere in the millions of rows; freezing trades that
+                        cost for a copy that no longer follows its sources. */}
+                    {d.recipe && !d.unavailable_reason && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground hover:text-foreground"
+                            disabled={freeze.isPending}
+                          >
+                            <Snowflake className="h-3.5 w-3.5" /> Freeze
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Freeze "{d.display_name}" to a table?
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This copies the rows it returns right now into an ordinary table
+                              called "{d.display_name} (frozen)". The copy stops following its
+                              sources — later changes to them will not appear in it — and both this
+                              combination and every dataset it reads from are left in place. On a
+                              large combination the copy can take a while.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => freeze.mutate(d)}>
+                              Freeze to a table
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                    {/* A combined dataset owns nothing but a recipe and a view,
+                        so removing it is safe; an attached one must be detached. */}
+                    {(d.read_only !== 1 || d.recipe) && (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -655,12 +811,21 @@ function DatasetsTab({
                           <AlertDialogHeader>
                             <AlertDialogTitle>Delete "{d.display_name}"?</AlertDialogTitle>
                             <AlertDialogDescription>
-                              This drops the underlying database table
-                              <code className="mx-1 rounded bg-secondary px-1 py-0.5 text-[10px]">
-                                {d.table_name}
-                              </code>
-                              and removes {d.row_count.toLocaleString()} rows. This cannot be
-                              undone.
+                              {d.recipe ? (
+                                <>
+                                  This removes the combination only. Every dataset it reads from is
+                                  left exactly as it is — no rows are deleted.
+                                </>
+                              ) : (
+                                <>
+                                  This drops the underlying database table
+                                  <code className="mx-1 rounded bg-secondary px-1 py-0.5 text-[10px]">
+                                    {d.table_name}
+                                  </code>
+                                  and removes {(d.row_count ?? 0).toLocaleString()} rows. This
+                                  cannot be undone.
+                                </>
+                              )}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
@@ -669,7 +834,7 @@ function DatasetsTab({
                               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                               onClick={() => del.mutate(d.id)}
                             >
-                              Delete dataset
+                              {d.recipe ? "Remove combination" : "Delete dataset"}
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>

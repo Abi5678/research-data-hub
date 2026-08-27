@@ -109,7 +109,7 @@ function withSafeCategoryKeys(result: CategoryPlotResult): {
   const data = result.data.map((row) => {
     const next: CategoryPlotResult["data"][number] = { label: row.label };
     for (const { key, dataKey } of series) {
-      next[dataKey] = row[key] ?? 0;
+      next[dataKey] = row[key] ?? null; // keep gaps as gaps — see CategoryRow
     }
     return next;
   });

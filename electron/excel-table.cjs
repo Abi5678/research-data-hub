@@ -32,11 +32,21 @@ function isNumericish(t) {
 }
 
 function dedupeHeaders(rawHeaders) {
-  const seen = new Map();
+  // Counting occurrences per name is not enough: headers ['a','a','a_2'] made
+  // the second `a` into `a_2`, colliding with the real third column. Rows are
+  // keyed by header, so that column's data was silently overwritten. Probe for
+  // a suffix nothing has taken yet instead.
+  const used = new Set();
   return rawHeaders.map((h) => {
-    const n = seen.get(h) ?? 0;
-    seen.set(h, n + 1);
-    return n === 0 ? h : `${h}_${n + 1}`;
+    if (!used.has(h)) {
+      used.add(h);
+      return h;
+    }
+    let n = 2;
+    while (used.has(`${h}_${n}`)) n += 1;
+    const name = `${h}_${n}`;
+    used.add(name);
+    return name;
   });
 }
 

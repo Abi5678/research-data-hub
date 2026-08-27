@@ -10,6 +10,11 @@ const base = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const ATTACH_UNAVAILABLE =
   "Attaching an existing database is only available in the desktop app, which can reach your local files.";
 
+// Combined datasets are SQLite temp views rebuilt at every connection; Postgres
+// has neither that restriction nor attached databases, so the lab server would
+// need a genuinely different implementation rather than a port.
+const COMBINE_UNAVAILABLE = "Combined datasets are only available in the desktop app.";
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     ...init,
@@ -168,9 +173,30 @@ export const httpApi: LocalApi = {
   },
   // Nothing can be attached in server mode, so the list is simply empty.
   listAttachedSources: async () => [],
+  refreshAttachedSources: async () => ({ refreshed: 0, unavailable: [] }),
   detachSource: async () => {
     throw new Error(ATTACH_UNAVAILABLE);
   },
+  previewCombinedSql: async () => {
+    throw new Error(COMBINE_UNAVAILABLE);
+  },
+  preflightCombine: async () => {
+    throw new Error(COMBINE_UNAVAILABLE);
+  },
+  createCombinedDataset: async () => {
+    throw new Error(COMBINE_UNAVAILABLE);
+  },
+  updateCombinedDataset: async () => {
+    throw new Error(COMBINE_UNAVAILABLE);
+  },
+  // No combined datasets exist here, so nothing depends on anything.
+  combinedDependents: async () => [],
+  freezeCombinedDataset: async () => {
+    throw new Error(COMBINE_UNAVAILABLE);
+  },
+  // Only combined datasets ever need counting on demand, and there are none
+  // here, so listDatasets already carries a real number for every dataset.
+  datasetRowCount: async () => null,
 };
 
 export type AuthUser = { id: string; email: string; global_role: "admin" | "user" };

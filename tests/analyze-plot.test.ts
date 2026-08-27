@@ -234,4 +234,48 @@ describe("analyze-plot", () => {
     expect(table.headers).toEqual(["mix_id", "value"]);
     expect(table.rows[0]).toEqual(["BL", 410]);
   });
+
+  it("leaves an untested combination empty instead of plotting it as zero", () => {
+    // Section B was never tested with mix AC. A 0 there draws a bar and reads
+    // as "measured, got zero"; null draws nothing, which is what happened.
+    const rows = [
+      { section: "A", mix_id: "BL", gf: 400 },
+      { section: "A", mix_id: "AC", gf: 300 },
+      { section: "B", mix_id: "BL", gf: 500 },
+    ];
+    const spec = {
+      id: "p1",
+      kind: "bar" as const,
+      xColumn: "section",
+      yColumn: "gf",
+      aggregation: "mean" as const,
+      seriesColumn: "mix_id",
+      bins: 10,
+    };
+    const mean = buildAnalyzePlot(spec, rows);
+    expect(mean!.data.find((d) => d.label === "B")).toEqual({ label: "B", BL: 500, AC: null });
+    expect(plotResultToChartTable(mean!).rows).toContainEqual(["B", 500, null]);
+
+    // A count of nothing genuinely is zero, so counts keep their zeros.
+    const count = buildAnalyzePlot({ ...spec, aggregation: "count" as const }, rows);
+    expect(count!.data.find((d) => d.label === "B")).toEqual({ label: "B", BL: 1, AC: 0 });
+  });
+
+  it("keeps empty histogram bins at zero", () => {
+    // A bin is a range that was measured and found empty - not a gap.
+    const result = buildAnalyzePlot(
+      {
+        id: "h1",
+        kind: "histogram" as const,
+        xColumn: "gf",
+        yColumn: "",
+        aggregation: "count" as const,
+        seriesColumn: "",
+        bins: 4,
+      },
+      [{ gf: 0 }, { gf: 1 }, { gf: 100 }],
+    );
+    expect(result!.data.every((d) => typeof d.value === "number")).toBe(true);
+    expect(result!.data.some((d) => d.value === 0)).toBe(true);
+  });
 });

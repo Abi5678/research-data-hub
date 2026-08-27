@@ -128,14 +128,23 @@ describe("fixture folder import", () => {
     expect(result.results.length).toBe(planForced.tables.length);
     const mix = result.results.find((r) => /mix/i.test(r.display_name));
     expect(mix).toBeTruthy();
-    // Force double on air_voids: 4 CSV rows; one invalid ? 3 inserted
-    expect(mix.inserted).toBe(3);
-    expect(mix.invalid).toBe(1);
+    // Force double on air_voids: 4 CSV rows, one with an unparseable cell.
+    // All 4 rows import; the bad cell is stored as NULL and quarantined, so the
+    // other measurements on that line survive.
+    expect(mix.inserted).toBe(4);
+    expect(mix.invalid).toBe(0);
+    expect(mix.repaired).toBe(1);
     expect(result.quarantine?.length).toBeGreaterThanOrEqual(1);
+
+    const nulled = db.runProjectQuery(
+      result.projectId,
+      `SELECT COUNT(*) AS c FROM ${db.listDatasets(result.projectId, "desc").find((d) => /mix/i.test(d.display_name)).table_name} WHERE air_voids IS NULL`,
+    );
+    expect(nulled.rows[0].c).toBe(1);
 
     const history = db.listImportHistory(result.projectId, 5);
     expect(history.length).toBeGreaterThanOrEqual(1);
-    expect(history[0].report.totals.invalid).toBeGreaterThanOrEqual(1);
+    expect(history[0].report.totals.repaired).toBeGreaterThanOrEqual(1);
 
     const datasets = db.listDatasets(result.projectId, "desc");
     expect(datasets.length).toBe(planForced.tables.length);

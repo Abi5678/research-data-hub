@@ -32,7 +32,9 @@ export type AnalyzePlotSpec = {
   bins: number;
 };
 
-export type CategoryRow = { label: string } & Record<string, string | number>;
+// null means "this combination was never measured" — Recharts draws a gap for
+// it, where a 0 would draw a real bar and read as a measurement of zero.
+export type CategoryRow = { label: string } & Record<string, string | number | null>;
 
 export type CategoryPlotResult = {
   kind: "bar" | "line" | "histogram";
@@ -420,7 +422,11 @@ function groupCategory(
     const row: CategoryRow = { label };
     for (const key of seriesInfo.keys) {
       const vals = inner.get(key) ?? [];
-      row[key] = vals.length === 0 ? 0 : aggregateValues(vals, aggregation);
+      // A count of nothing really is 0; a mean/median/sum of nothing is not a
+      // number at all. Reporting those as 0 made a section x mix combination
+      // that was never tested look like it had been tested and come out zero.
+      if (vals.length === 0) row[key] = aggregation === "count" ? 0 : null;
+      else row[key] = aggregateValues(vals, aggregation);
     }
     return row;
   });

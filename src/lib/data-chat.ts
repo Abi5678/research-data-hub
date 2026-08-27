@@ -11,7 +11,8 @@ import type { ColumnSchema } from "@/lib/csv";
 export type ChatTable = {
   table_name: string;
   display_name: string;
-  row_count: number;
+  /** Null for a combined dataset, whose rows are never counted up front. */
+  row_count: number | null;
   column_schema: ColumnSchema[];
 };
 
@@ -38,7 +39,12 @@ function describeTable(t: ChatTable): string {
       return `    ${c.name} ${c.type}${friendly}`;
     })
     .join("\n");
-  return `  ${t.table_name}  (${t.row_count.toLocaleString()} rows) -- ${t.display_name}\n${cols}`;
+  // An unknown count is described as such rather than as zero: a model told a
+  // table has no rows will route around it, and a combined view is often the
+  // biggest table in the project.
+  const size =
+    t.row_count === null ? "combined from other tables" : `${t.row_count.toLocaleString()} rows`;
+  return `  ${t.table_name}  (${size}) -- ${t.display_name}\n${cols}`;
 }
 
 export function buildSchemaPrompt(tables: ChatTable[]): string {
@@ -95,7 +101,10 @@ export function selectRelevantTables(
     return { table: t, score };
   });
 
-  scored.sort((a, b) => b.score - a.score || b.table.row_count - a.table.row_count);
+  // Size only breaks ties between equally relevant tables. An uncounted
+  // combined view sorts as if it were empty, which costs it nothing but the
+  // tiebreak against a table the question matched just as well.
+  scored.sort((a, b) => b.score - a.score || (b.table.row_count ?? 0) - (a.table.row_count ?? 0));
   return scored.slice(0, max).map((s) => s.table);
 }
 

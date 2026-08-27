@@ -172,6 +172,8 @@ export function buildAnalyzeSql(args: {
   filterOp?: BrowseFilterOp;
   filterValue?: string;
   limit?: number;
+  /** Whether the left table has a row_id; see buildBrowseSql. */
+  hasRowId?: boolean;
 }): string {
   if (!args.join) {
     return buildBrowseSql({
@@ -181,6 +183,7 @@ export function buildAnalyzeSql(args: {
       filterOp: args.filterOp,
       filterValue: args.filterValue,
       limit: args.limit,
+      hasRowId: args.hasRowId,
     });
   }
 
@@ -188,7 +191,7 @@ export function buildAnalyzeSql(args: {
   const wanted = new Set(args.requested.filter((n) => n !== "row_id"));
   const selected = refs.filter((r) => wanted.has(r.name));
   const selectParts = [
-    `t1.row_id AS ${quoteIdent("row_id")}`,
+    ...(args.hasRowId === false ? [] : [`t1.row_id AS ${quoteIdent("row_id")}`]),
     ...selected.map((r) => `${sqlExprFor(r)} AS ${quoteIdent(r.name)}`),
   ];
 

@@ -54,7 +54,7 @@ type DatasetRow = {
   id: string;
   display_name: string;
   table_name: string;
-  row_count: number;
+  row_count: number | null;
   column_schema: ColumnSchema[];
 };
 

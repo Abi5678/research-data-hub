@@ -35,6 +35,7 @@ import {
   BROWSE_FETCH_LIMIT,
   type BrowseFilterOp,
   guessIdColumn,
+  hasRowIdColumn,
   rowKey,
 } from "@/lib/browse-sql";
 import {
@@ -85,7 +86,7 @@ type Dataset = {
   id: string;
   display_name: string;
   table_name: string;
-  row_count: number;
+  row_count: number | null;
   column_schema: ColumnSchema[];
 };
 
@@ -218,6 +219,7 @@ export function AnalyzeTab({
       filterOp: applied?.op,
       filterValue: applied?.value,
       limit: BROWSE_FETCH_LIMIT,
+      hasRowId: hasRowIdColumn(dataset.column_schema),
     });
   }, [dataset, queryCols, join, columnRefs, applied]);
 
@@ -520,7 +522,8 @@ export function AnalyzeTab({
                   >
                     <div className="truncate">{d.display_name}</div>
                     <div className="mt-0.5 text-[10px] font-normal text-muted-foreground">
-                      {d.row_count.toLocaleString()} rows - {d.column_schema.length} cols
+                      {d.row_count === null ? "live" : `${d.row_count.toLocaleString()} rows`} -{" "}
+                      {d.column_schema.length} cols
                     </div>
                   </button>
                 );

@@ -409,8 +409,9 @@ app.get("/api/settings/:key", async (req, reply) => {
     return { value: v ? "••••••••" : null, configured: Boolean(v) };
   }
   if (key === "nvidia_model") {
+    // Only suggest the cloud model when cloud is the endpoint — see resolveModel.
     const v = await store.getSetting(key);
-    return { value: v ?? DEFAULT_MODEL };
+    return { value: v ?? (process.env.LLM_BASE_URL ? null : DEFAULT_MODEL) };
   }
   return { value: await store.getSetting(key) };
 });

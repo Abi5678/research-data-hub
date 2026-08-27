@@ -10,6 +10,23 @@ export function isAiAssistAvailable(): boolean {
   return cloudAllowed || localBaseUrl.length > 0;
 }
 
+/**
+ * DEFAULT_MODEL names a cloud NIM model, so it is only a sensible fallback when
+ * cloud is the endpoint. A local server serves whatever it was started with,
+ * and posting the NIM name to it returns a bare 404 that reads like the server
+ * is down rather than like a wrong model name.
+ */
+async function resolveModel(store: DataStore): Promise<string> {
+  const model = ((await store.getSetting("nvidia_model")) || "").trim();
+  if (model) return model;
+  if (localBaseUrl) {
+    throw new Error(
+      `No model name set for the local endpoint at ${localBaseUrl}. Set nvidia_model to a model it serves (see ${localBaseUrl.replace(/\/+$/, "")}/models).`,
+    );
+  }
+  return DEFAULT_MODEL;
+}
+
 export async function testLlmConnection(store: DataStore) {
   if (!isAiAssistAvailable()) {
     throw new Error(
@@ -17,7 +34,7 @@ export async function testLlmConnection(store: DataStore) {
     );
   }
 
-  const model = (await store.getSetting("nvidia_model")) || DEFAULT_MODEL;
+  const model = await resolveModel(store);
 
   if (localBaseUrl) {
     const reply = await chatLocal(
@@ -69,7 +86,7 @@ async function chatLocal(
 async function getCloudConfig(store: DataStore) {
   if (!cloudAllowed) throw new Error("Cloud NIM is disabled (set ALLOW_CLOUD_NIM=1 to enable)");
   const apiKey = await store.getSetting("nvidia_api_key");
-  const model = (await store.getSetting("nvidia_model")) || DEFAULT_MODEL;
+  const model = await resolveModel(store);
   if (!apiKey) throw new Error("No NVIDIA API key configured");
   return { apiKey, model };
 }
@@ -118,7 +135,7 @@ export async function llmChat(
     );
   }
   if (localBaseUrl) {
-    const model = (await store.getSetting("nvidia_model")) || DEFAULT_MODEL;
+    const model = await resolveModel(store);
     return chatLocal(messages, model, opts);
   }
   return chatCloud(store, messages, opts);

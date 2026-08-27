@@ -29,10 +29,17 @@ function isAiAssistAvailable() {
 
 function getConfig() {
   const local = localBaseUrl();
-  const model =
-    db.getSetting("nvidia_model") || db.getSetting("llm_model") || DEFAULT_MODEL;
+  const model = (db.getSetting("nvidia_model") || db.getSetting("llm_model") || "").trim();
   if (local) {
     const apiKey = db.getSetting("nvidia_api_key") || db.getSetting("llm_api_key") || "local";
+    // DEFAULT_MODEL names a cloud NIM model. Posting it to Ollama or vLLM gets a
+    // bare 404 that reads like the endpoint is down, so make the real cause the
+    // error: a local server only knows the models it was started with.
+    if (!model) {
+      throw new Error(
+        `No model name set for the local endpoint at ${local}. Add the model it serves (see ${local}/models) under Settings.`,
+      );
+    }
     return {
       apiKey,
       model,
@@ -49,7 +56,7 @@ function getConfig() {
   if (!apiKey) {
     throw new Error("No NVIDIA API key configured. Add one under Settings.");
   }
-  return { apiKey, model, apiUrl: CLOUD_API_URL, mode: "cloud" };
+  return { apiKey, model: model || DEFAULT_MODEL, apiUrl: CLOUD_API_URL, mode: "cloud" };
 }
 
 async function chat(messages, { maxTokens = 8192, temperature = 0.2 } = {}) {
@@ -80,11 +87,10 @@ async function chat(messages, { maxTokens = 8192, temperature = 0.2 } = {}) {
   return content;
 }
 
+/** Model ids the configured endpoint actually serves. OpenAI-compatible
+ *  servers (NIM, vLLM, llama.cpp, Ollama's /v1) all expose /models. */
 async function listModels() {
-  const { apiKey, apiUrl, mode } = getConfig();
-  if (mode !== "cloud") {
-    return [db.getSetting("nvidia_model") || DEFAULT_MODEL];
-  }
+  const { apiKey, apiUrl } = getConfig();
   const base = apiUrl.replace(/\/chat\/completions$/, "");
   const res = await fetch(`${base}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -103,17 +109,25 @@ async function testConnection() {
     );
     return { model, reply: reply.trim().slice(0, 80), mode };
   } catch (err) {
-    if (String(err.message).includes("404") && mode === "cloud") {
+    // A wrong model name is the usual cause of a 404 here, and it used to be
+    // reported raw to local users — who are the ones most likely to have it
+    // wrong, since their server serves whatever they loaded into it.
+    if (String(err.message).includes("404")) {
       let suggestions = [];
       try {
         const ids = await listModels();
-        suggestions = ids.filter((id) => /nemotron/i.test(id)).slice(0, 8);
+        // Cloud lists hundreds of models; local lists the handful it serves.
+        suggestions = (mode === "cloud" ? ids.filter((id) => /nemotron/i.test(id)) : ids).slice(
+          0,
+          8,
+        );
       } catch {
         /* keep original error */
       }
       if (suggestions.length > 0) {
+        const where = mode === "cloud" ? "on this account" : "on that endpoint";
         throw new Error(
-          `Model "${model}" is not available on this account. Available Nemotron models: ${suggestions.join(", ")}`,
+          `Model "${model}" is not available ${where}. Available models: ${suggestions.join(", ")}`,
         );
       }
     }

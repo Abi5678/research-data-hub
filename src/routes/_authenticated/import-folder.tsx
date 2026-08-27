@@ -173,11 +173,11 @@ function ImportFolderPage() {
     },
     onSuccess: (res) => {
       const total = res.results.reduce((s, r) => s + r.inserted, 0);
-      const invalid = res.results.reduce((s, r) => s + (r.invalid || 0), 0);
+      const repairedCells = res.results.reduce((s, r) => s + (r.repaired || 0), 0);
       const skipped = res.skippedSources?.length ?? 0;
       toast.success(
         `Imported ${res.results.length} tables, ${total.toLocaleString()} rows` +
-          (invalid ? `, ${invalid} invalid rows quarantined` : "") +
+          (repairedCells ? `, ${repairedCells} cell(s) stored as empty` : "") +
           (skipped ? `, ${skipped} source(s) skipped` : ""),
       );
       navigate({ to: "/projects/$projectId", params: { projectId: res.projectId } });
@@ -680,12 +680,14 @@ function ServerFolderImportPage() {
         const base = source.sheet
           ? `${source.fileName.replace(/\.[^.]+$/, "")} — ${source.sheet}`
           : source.fileName.replace(/\.[^.]+$/, "");
+        // Cells that fail their column type are stored as NULL; the row is
+        // still imported so the rest of its measurements survive.
         const valid: Record<string, string | null>[] = [];
-        let invalid = 0;
+        let repaired = 0;
         for (const row of source.parsed.rows) {
           const result = coerceRow(row, source.columns);
-          if (result.ok) valid.push(result.row);
-          else invalid++;
+          valid.push(result.row);
+          repaired += result.bad.length;
         }
         return {
           displayName: base.slice(0, 80),
@@ -696,7 +698,7 @@ function ServerFolderImportPage() {
             type: c.type,
           })),
           rows: valid,
-          invalid,
+          repaired,
         };
       });
       const res = await api.executeImportPlan({

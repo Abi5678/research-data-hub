@@ -40,6 +40,10 @@ export type AuthUser = {
   global_role: "admin" | "user";
 };
 
+// Upper bound on rows a single query may return. High enough that exports of
+// a full dataset are not silently clipped; low enough to stay in memory.
+const MAX_QUERY_ROWS = 200000;
+
 export class DataStore {
   constructor(private pool: Pool) {}
 
@@ -535,14 +539,17 @@ export class DataStore {
     if (!(await this.userCanAccessProject(user, projectId, "read"))) {
       throw new Error("Forbidden");
     }
-    const lim = Math.min(Math.max(Number(limit) || 500, 1), 5000);
+    const lim = Math.min(Math.max(Number(limit) || 500, 1), MAX_QUERY_ROWS);
     const allowed = (
       await this.pool.query("SELECT table_name FROM datasets WHERE project_id = $1", [projectId])
     ).rows.map((r) => r.table_name as string);
     const clean = prepareProjectSelect(sql, allowed);
-    const r = await this.pool.query(`SELECT * FROM (${clean}) AS _q LIMIT ${lim}`);
+    // Fetch one past the limit so callers can tell a full result from a
+    // clipped one — an export that silently stops at the cap looks complete.
+    const r = await this.pool.query(`SELECT * FROM (${clean}) AS _q LIMIT ${lim + 1}`);
     const columns = r.fields.map((f) => f.name);
-    return { rows: r.rows, columns };
+    const truncated = r.rows.length > lim;
+    return { rows: truncated ? r.rows.slice(0, lim) : r.rows, columns, truncated };
   }
 
   async listSavedQueries(user: AuthUser, projectId: string) {

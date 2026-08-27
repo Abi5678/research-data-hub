@@ -99,9 +99,11 @@ function SettingsPage() {
 
   const restore = useMutation({
     mutationFn: () => api.restoreDatabase(),
-    onSuccess: (path) => {
-      if (path) {
-        toast.success("Database restored — reload the app window");
+    onSuccess: (res) => {
+      if (res) {
+        toast.success("Database restored — reload the app window", {
+          description: res.previous ? `Replaced database kept at ${res.previous}` : undefined,
+        });
         qc.invalidateQueries();
       }
     },

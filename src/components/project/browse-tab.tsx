@@ -18,10 +18,12 @@ import { exportRows, EXPORT_FORMATS, type ExportFormat } from "@/lib/export";
 import type { ColumnSchema } from "@/lib/csv";
 import {
   BROWSE_FETCH_LIMIT,
+  BROWSE_PROBE_LIMIT,
   type BrowseFilterOp,
   buildBrowseSql,
   defaultVisibleColumns,
   guessIdColumn,
+  hasRowIdColumn,
   rowKey,
 } from "@/lib/browse-sql";
 import { DashboardPanel } from "@/components/project/dashboard-panel";
@@ -52,7 +54,7 @@ type Dataset = {
   id: string;
   display_name: string;
   table_name: string;
-  row_count: number;
+  row_count: number | null;
   column_schema: ColumnSchema[];
 };
 
@@ -128,7 +130,8 @@ export function BrowseTab({
       filterColumn: applied?.column,
       filterOp: applied?.op,
       filterValue: applied?.value,
-      limit: BROWSE_FETCH_LIMIT,
+      limit: BROWSE_PROBE_LIMIT,
+      hasRowId: hasRowIdColumn(dataset.column_schema),
     });
   }, [dataset, visibleCols, applied]);
 
@@ -136,14 +139,20 @@ export function BrowseTab({
     queryKey: ["browse", projectId, dataset?.id, sql],
     enabled: Boolean(dataset && sql),
     queryFn: async () => {
-      const { rows } = await api.runProjectQuery(projectId, sql, BROWSE_FETCH_LIMIT);
-      return { rows, columns: visibleCols };
+      const { rows } = await api.runProjectQuery(projectId, sql, BROWSE_PROBE_LIMIT);
+      // The extra probe row is proof there is more, not something to show.
+      const capped = rows.length > BROWSE_FETCH_LIMIT;
+      return {
+        rows: capped ? rows.slice(0, BROWSE_FETCH_LIMIT) : rows,
+        truncated: capped,
+        columns: visibleCols,
+      };
     },
   });
 
   // Stable identity keeps the dashboard from recomputing on every render.
   const rows = useMemo(() => browseQuery.data?.rows ?? [], [browseQuery.data]);
-  const truncated = rows.length >= BROWSE_FETCH_LIMIT;
+  const truncated = browseQuery.data?.truncated ?? false;
 
   // Rows that feed exports and the dashboard: checked rows win over the full filtered set.
   const exportRowsData = useMemo(() => {
@@ -183,9 +192,15 @@ export function BrowseTab({
       return { filename, format, count: projected.length, selected: selectedRowIds.size > 0 };
     },
     onSuccess: ({ format, count, selected }) => {
-      toast.success(
-        `Exported ${count.toLocaleString()} ${selected ? "selected " : ""}row(s) as ${format.toUpperCase()}`,
-      );
+      const msg = `Exported ${count.toLocaleString()} ${selected ? "selected " : ""}row(s) as ${format.toUpperCase()}`;
+      // Browse only ever holds the first page; never call a clipped one complete.
+      if (truncated && !selected) {
+        toast.warning(
+          `${msg} — the table has more than ${BROWSE_FETCH_LIMIT.toLocaleString()} matching rows; filter, or use the Query tab to export the rest`,
+        );
+      } else {
+        toast.success(msg);
+      }
       qc.invalidateQueries({ queryKey: ["exports", projectId] });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Export failed"),
@@ -291,7 +306,10 @@ export function BrowseTab({
                 >
                   <div className="truncate">{d.display_name}</div>
                   <div className="mt-0.5 text-[10px] font-normal text-muted-foreground">
-                    {d.row_count.toLocaleString()} rows - {d.column_schema.length} cols
+                    {/* A combined view has no stored count; counting one here
+                        would re-run its joins for every dataset in the list. */}
+                    {d.row_count === null ? "live" : `${d.row_count.toLocaleString()} rows`} -{" "}
+                    {d.column_schema.length} cols
                   </div>
                 </button>
               );

@@ -73,7 +73,7 @@ export function DatasetUploadDialog({
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState("");
-  const [skipped, setSkipped] = useState<{ row: number; reason: string }[]>([]);
+  const [repaired, setRepaired] = useState<{ row: number; reason: string }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
@@ -86,7 +86,7 @@ export function DatasetUploadDialog({
     setColumns([]);
     setProgress(0);
     setProgressMsg("");
-    setSkipped([]);
+    setRepaired([]);
   }, []);
 
   const applyExpected = useCallback(
@@ -193,15 +193,16 @@ export function DatasetUploadDialog({
       });
       const datasetId = created.dataset_id;
 
-      // Validate + coerce rows client-side; skip invalid ones
+      // Coerce rows client-side. Cells that fail their column type are stored
+      // as NULL and reported; the rest of the row is still imported.
       const goodRows: Record<string, string | null>[] = [];
-      const badRows: { row: number; reason: string }[] = [];
+      const badCells: { row: number; reason: string }[] = [];
       parsed.rows.forEach((raw, i) => {
         const res = coerceRow(raw, columns);
-        if (res.ok) goodRows.push(res.row);
-        else badRows.push({ row: i + 2, reason: res.reason }); // +2 = header + 1-index
+        goodRows.push(res.row);
+        for (const b of res.bad) badCells.push({ row: i + 2, reason: b.reason }); // +2 = header + 1-index
       });
-      setSkipped(badRows);
+      setRepaired(badCells);
 
       // Chunked insert
       const CHUNK = 1000;
@@ -218,12 +219,12 @@ export function DatasetUploadDialog({
 
       setProgress(100);
       setProgressMsg("Done");
-      return { inserted, badCount: badRows.length, datasetId };
+      return { inserted, badCount: badCells.length, datasetId };
     },
     onSuccess: ({ inserted, badCount, datasetId }) => {
       toast.success(
         `Imported ${inserted.toLocaleString()} rows${
-          badCount > 0 ? ` — skipped ${badCount} invalid row${badCount === 1 ? "" : "s"}` : ""
+          badCount > 0 ? ` — ${badCount} cell${badCount === 1 ? "" : "s"} stored as empty` : ""
         }`,
       );
       qc.invalidateQueries({ queryKey: ["datasets", projectId] });
@@ -473,19 +474,19 @@ export function DatasetUploadDialog({
               <div className="text-sm font-semibold text-foreground">Importing…</div>
               <Progress value={progress} />
               <div className="text-xs text-muted-foreground">{progressMsg}</div>
-              {skipped.length > 0 && (
+              {repaired.length > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
                   <div className="mb-1 flex items-center gap-1 font-semibold">
-                    <AlertTriangle className="h-3 w-3" /> Skipped {skipped.length} row
-                    {skipped.length === 1 ? "" : "s"}
+                    <AlertTriangle className="h-3 w-3" /> {repaired.length} cell
+                    {repaired.length === 1 ? "" : "s"} stored as empty
                   </div>
                   <ul className="max-h-24 space-y-0.5 overflow-auto">
-                    {skipped.slice(0, 5).map((s) => (
-                      <li key={s.row}>
+                    {repaired.slice(0, 5).map((s, i) => (
+                      <li key={`${s.row}-${i}`}>
                         Line {s.row}: {s.reason}
                       </li>
                     ))}
-                    {skipped.length > 5 && <li>…and {skipped.length - 5} more</li>}
+                    {repaired.length > 5 && <li>…and {repaired.length - 5} more</li>}
                   </ul>
                 </div>
               )}
