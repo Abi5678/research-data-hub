@@ -55,6 +55,13 @@ const DB_METHODS = [
   "datasetRowCount",
   "pickDatabaseFile",
   "getDatabasePath",
+  "listScripts",
+  "getScript",
+  "createScript",
+  "updateScript",
+  "listScriptRuns",
+  "getScriptRun",
+  "scriptEntryFilename",
 ];
 
 const api = {};
@@ -75,6 +82,22 @@ api.onImportProgress = (cb) => {
   const listener = (_event, msg) => cb(msg);
   ipcRenderer.on("import-progress", listener);
   return () => ipcRenderer.removeListener("import-progress", listener);
+};
+
+api.deleteScript = (scriptId) => invoke("db:deleteScript", scriptId);
+api.pickScriptFile = () => invoke("scripts:pickFile");
+api.runScript = (payload) => invoke("scripts:run", payload);
+api.cancelScriptRun = (runId) => invoke("scripts:cancel", runId);
+api.readRunFile = (runId, name) => invoke("scripts:readRunFile", runId, name);
+api.openRunFolder = (runId) => invoke("scripts:openRunFolder", runId);
+api.detectRuntimes = () => invoke("runtimes:detect");
+api.testMatlab = (binPath) => invoke("runtimes:testMatlab", binPath);
+// Separate from import-progress: that channel is a single global stream of bare
+// strings with no run id, so it cannot tell two runs apart or carry a result.
+api.onScriptRunEvent = (cb) => {
+  const listener = (_event, msg) => cb(msg);
+  ipcRenderer.on("script-run-event", listener);
+  return () => ipcRenderer.removeListener("script-run-event", listener);
 };
 
 contextBridge.exposeInMainWorld("api", api);

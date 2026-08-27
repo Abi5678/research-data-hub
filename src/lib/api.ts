@@ -160,6 +160,74 @@ export type ProjectInput = {
   template_key?: string | null;
 };
 
+export type ScriptLanguage = "python" | "matlab";
+
+export type Script = {
+  id: string;
+  project_id: string;
+  name: string;
+  language: ScriptLanguage;
+  /** The script text, copied into the database at import. The file on disk is
+   *  never modified, so `origin_path` and this can diverge — deliberately. */
+  code: string;
+  /** What the file is called inside a run folder. For MATLAB its stem is a valid
+   *  identifier, because `-batch` takes a function name. */
+  entry_filename: string;
+  origin_path: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count?: number;
+};
+
+export type ScriptRunInput = {
+  dataset_id: string;
+  display_name: string;
+  /** Filename in the run folder — `data.csv` for the first dataset. */
+  file: string;
+  row_count: number;
+  columns: string[];
+};
+
+export type ScriptRunOutput = {
+  name: string;
+  size: number;
+  kind: "image" | "pdf" | "csv" | "file";
+};
+
+export type ScriptRun = {
+  id: string;
+  script_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "ok" | "failed" | "cancelled" | "timeout";
+  exit_code: number | null;
+  run_dir: string;
+  /** Exactly the code that ran, so a later edit cannot rewrite history. */
+  code_snapshot: string;
+  inputs: ScriptRunInput[];
+  outputs: ScriptRunOutput[];
+  stdout: string;
+  stderr: string;
+};
+
+export type ScriptRunEvent =
+  | { runId: string; kind: "status" | "stdout" | "stderr"; text: string }
+  | { runId: string; kind: "done"; run?: ScriptRun; error?: string };
+
+export type RuntimeCandidate = {
+  path: string;
+  ok: boolean;
+  version?: string | null;
+  libraries?: Record<string, boolean>;
+  /** What the picker shows, e.g. "Python 3.12.4 — pandas, numpy". */
+  detail: string;
+};
+
+export type RuntimeDetection = {
+  python: { candidates: RuntimeCandidate[]; selected: string | null };
+  matlab: { candidates: RuntimeCandidate[]; selected: string | null };
+};
+
 export type LocalApi = {
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | null>;
@@ -278,6 +346,46 @@ export type LocalApi = {
     mode?: string;
   }): Promise<ExecuteImportResult>;
   onImportProgress(cb: (msg: string) => void): () => void;
+
+  // ---------- scripts (desktop only — running code needs a local machine) ----------
+  listScripts(projectId: string): Promise<Script[]>;
+  getScript(scriptId: string): Promise<Script>;
+  createScript(args: {
+    projectId: string;
+    name: string;
+    language: ScriptLanguage;
+    code?: string;
+    originPath?: string | null;
+  }): Promise<Script>;
+  updateScript(scriptId: string, args: { name?: string; code?: string }): Promise<Script>;
+  /** Resolves with the deleted script's name, for the confirmation message. */
+  deleteScript(scriptId: string): Promise<string>;
+  /** The filename a script would get in a run folder, for showing in the UI
+   *  before it is saved. */
+  scriptEntryFilename(name: string, language: ScriptLanguage): Promise<string>;
+  listScriptRuns(scriptId: string, limit?: number): Promise<ScriptRun[]>;
+  getScriptRun(runId: string): Promise<ScriptRun>;
+  /** Opens a file picker and reads the text; the file itself is never run. */
+  pickScriptFile(): Promise<{
+    path: string;
+    name: string;
+    language: ScriptLanguage;
+    code: string;
+  } | null>;
+  /** Returns once the run has an id. Completion arrives as a `done` event on
+   *  `onScriptRunEvent`, so a ten-minute MATLAB run does not sit on an open IPC
+   *  promise. */
+  runScript(payload: {
+    scriptId: string;
+    datasetIds: string[];
+    timeoutMs?: number;
+  }): Promise<{ runId: string }>;
+  cancelScriptRun(runId: string): Promise<boolean>;
+  readRunFile(runId: string, name: string): Promise<{ name: string; size: number; base64: string }>;
+  openRunFolder(runId: string): Promise<void>;
+  detectRuntimes(): Promise<RuntimeDetection>;
+  testMatlab(binPath: string): Promise<{ ok: boolean; detail: string }>;
+  onScriptRunEvent(cb: (event: ScriptRunEvent) => void): () => void;
 };
 
 declare global {

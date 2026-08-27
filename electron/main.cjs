@@ -1,13 +1,22 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const crypto = require("crypto");
+const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const dbApi = require("./db.cjs");
 const llm = require("./llm.cjs");
 const folderImport = require("./folder-import.cjs");
+const runtimes = require("./runtimes.cjs");
+const scriptRunner = require("./script-runner.cjs");
 
 const DEV_URL = process.env.ELECTRON_START_URL || "http://127.0.0.1:5173";
 const isDev = !app.isPackaged;
+
+/** Interpreter choices, set from Settings. Resolved here rather than passed in
+ *  with a run, so the renderer never hands a path to spawn(). */
+const PYTHON_PATH_SETTING = "python_path";
+const MATLAB_PATH_SETTING = "matlab_path";
 
 /** Normalized absolute paths approved for folder import (dialog or env). */
 const approvedImportRoots = new Set();
@@ -43,7 +52,22 @@ function assertApprovedImportFolder(folderPath) {
 function registerIpc() {
   // attachSource / backup / restore need dialog-backed handlers (paths must not
   // come from free-form renderer strings). Skip them in the generic loop.
-  const manual = new Set(["open", "attachSource", "backupDatabase", "restoreDatabase"]);
+  //
+  // The script methods excluded here are excluded for real reasons, not tidiness:
+  // writeDatasetCsv takes a destination path, so exposing it would let the
+  // renderer write a file anywhere on disk; createScriptRun / finishScriptRun
+  // are the runner's bookkeeping and a renderer that could call them could
+  // fabricate a run history; deleteScript has to clean up folders on disk.
+  const manual = new Set([
+    "open",
+    "attachSource",
+    "backupDatabase",
+    "restoreDatabase",
+    "writeDatasetCsv",
+    "createScriptRun",
+    "finishScriptRun",
+    "deleteScript",
+  ]);
   const methods = Object.keys(dbApi).filter((k) => !manual.has(k));
   for (const name of methods) {
     ipcMain.handle(`db:${name}`, (_event, ...args) => dbApi[name](...args));
@@ -106,8 +130,7 @@ function registerIpc() {
       filters: [{ name: "SQLite", extensions: ["sqlite3", "db", "sqlite"] }],
     });
     if (res.canceled || !res.filePaths[0]) return null;
-    dbApi.restoreDatabase(res.filePaths[0]);
-    return res.filePaths[0];
+    return dbApi.restoreDatabase(res.filePaths[0]);
   });
 
   ipcMain.handle("import:pickFolder", async (event) => {
@@ -137,6 +160,79 @@ function registerIpc() {
         event.sender.send("import-progress", msg);
       },
     );
+  });
+
+  // ---------- scripts ----------
+
+  ipcMain.handle("runtimes:detect", () =>
+    runtimes.detect({
+      pythonSetting: dbApi.getSetting(PYTHON_PATH_SETTING),
+      matlabSetting: dbApi.getSetting(MATLAB_PATH_SETTING),
+    }),
+  );
+
+  ipcMain.handle("runtimes:testMatlab", (_event, binPath) => runtimes.testMatlab(binPath));
+
+  // Import: the file is read and its text copied into the database. It is never
+  // executed from where it sits and never written back to.
+  ipcMain.handle("scripts:pickFile", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: "Add an analysis script",
+      properties: ["openFile"],
+      filters: [
+        { name: "Analysis scripts", extensions: ["py", "m"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    const filePath = res.filePaths[0];
+    return {
+      path: filePath,
+      name: path.basename(filePath),
+      language: path.extname(filePath).toLowerCase() === ".m" ? "matlab" : "python",
+      code: fs.readFileSync(filePath, "utf8"),
+    };
+  });
+
+  // Returns as soon as the run has an id; completion arrives as a "done" event.
+  // Holding an invoke() promise open for up to ten minutes would make a long
+  // MATLAB run indistinguishable from a wedged IPC channel.
+  ipcMain.handle("scripts:run", async (event, { scriptId, datasetIds, timeoutMs }) => {
+    const script = dbApi.getScript(scriptId);
+    const isMatlab = script.language === "matlab";
+    // Falls back to detection so a fresh install can run something without a
+    // trip to Settings; Settings is the override, not a prerequisite.
+    const interpreter =
+      dbApi.getSetting(isMatlab ? MATLAB_PATH_SETTING : PYTHON_PATH_SETTING) ||
+      (await runtimes.detect({}))[isMatlab ? "matlab" : "python"].selected;
+    const runId = crypto.randomUUID();
+    const send = (msg) => {
+      if (!event.sender.isDestroyed()) event.sender.send("script-run-event", msg);
+    };
+
+    scriptRunner
+      .startRun({ runId, scriptId, datasetIds, interpreter, timeoutMs }, send)
+      .then((run) => send({ runId, kind: "done", run }))
+      .catch((err) => send({ runId, kind: "done", error: String(err.message || err) }));
+
+    return { runId };
+  });
+
+  ipcMain.handle("scripts:cancel", (_event, runId) => scriptRunner.stop(runId));
+  ipcMain.handle("scripts:readRunFile", (_event, runId, name) =>
+    scriptRunner.readRunFile(runId, name),
+  );
+  ipcMain.handle("scripts:openRunFolder", (_event, runId) => {
+    shell.openPath(dbApi.getScriptRun(runId).run_dir);
+  });
+
+  // Wrapped rather than auto-registered: the rows go with the script, and so do
+  // the run folders on disk.
+  ipcMain.handle("db:deleteScript", (_event, scriptId) => {
+    const { deleted, run_dirs } = dbApi.deleteScript(scriptId);
+    scriptRunner.removeRunDirs(run_dirs);
+    return deleted;
   });
 }
 
@@ -168,6 +264,8 @@ app.whenReady().then(() => {
     process.env.DB_PATH || path.join(app.getPath("userData"), "research-data-hub.sqlite3");
   dbApi.open(dbPath);
   console.log(`SQLite database: ${dbPath}`);
+
+  scriptRunner.configure({ runsRoot: path.join(app.getPath("userData"), "script-runs") });
 
   if (process.env.IMPORT_ROOT) {
     approveImportRoot(process.env.IMPORT_ROOT);

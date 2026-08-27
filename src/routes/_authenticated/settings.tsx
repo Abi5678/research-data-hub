@@ -8,6 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   CheckCircle2,
   Database,
   HardDriveDownload,
@@ -15,6 +22,7 @@ import {
   KeyRound,
   Loader2,
   Sparkles,
+  Terminal,
 } from "lucide-react";
 
 const DEFAULT_MODEL = "nvidia/llama-3.3-nemotron-super-49b-instruct";
@@ -26,7 +34,7 @@ export const Route = createFileRoute("/_authenticated/settings")({
 function SettingsPage() {
   const qc = useQueryClient();
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState("");
   const [llmBase, setLlmBase] = useState("");
   const [testResult, setTestResult] = useState<string | null>(null);
   const [cloudAllowed, setCloudAllowed] = useState(false);
@@ -42,7 +50,10 @@ function SettingsPage() {
       ]);
       return {
         key: key ?? "",
-        model: m ?? DEFAULT_MODEL,
+        // Only prefill the cloud model when cloud is the endpoint. Offering it
+        // to someone pointing at a local server just gets that name posted to
+        // Ollama, which answers 404.
+        model: m ?? (cloud && !(base ?? "").trim() ? DEFAULT_MODEL : ""),
         llmBase: base ?? "",
         cloud,
       };
@@ -62,7 +73,7 @@ function SettingsPage() {
   const save = useMutation({
     mutationFn: async () => {
       await api.setSetting("nvidia_api_key", apiKey.trim());
-      await api.setSetting("nvidia_model", model.trim() || DEFAULT_MODEL);
+      await api.setSetting("nvidia_model", model.trim());
       await api.setSetting("llm_base_url", llmBase.trim());
     },
     onSuccess: () => {
@@ -75,7 +86,7 @@ function SettingsPage() {
   const test = useMutation({
     mutationFn: async () => {
       await api.setSetting("nvidia_api_key", apiKey.trim());
-      await api.setSetting("nvidia_model", model.trim() || DEFAULT_MODEL);
+      await api.setSetting("nvidia_model", model.trim());
       await api.setSetting("llm_base_url", llmBase.trim());
       return api.testLlmConnection();
     },
@@ -154,6 +165,8 @@ function SettingsPage() {
         </div>
       )}
 
+      {!isServerMode && <RuntimesCard />}
+
       <div className="mt-8 space-y-6 rounded-2xl border border-border/70 bg-card p-6 shadow-card sm:p-8">
         <div className="flex items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-primary shadow-glow">
@@ -201,15 +214,24 @@ function SettingsPage() {
 
         <div className="space-y-1.5">
           <Label htmlFor="nvidia-model" className="text-xs font-semibold">
-            Model
+            Model {llmBase.trim() ? "(required for a local endpoint)" : ""}
           </Label>
           <Input
             id="nvidia-model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            placeholder={DEFAULT_MODEL}
+            placeholder={llmBase.trim() ? "the model your server serves" : DEFAULT_MODEL}
             className="font-mono"
           />
+          {llmBase.trim() && (
+            <p className="text-[11px] text-muted-foreground">
+              Use a name your server actually serves — list them at{" "}
+              <code className="rounded bg-secondary px-1 py-0.5">
+                {llmBase.trim().replace(/\/$/, "")}/models
+              </code>
+              .
+            </p>
+          )}
         </div>
 
         {testResult && (
@@ -232,6 +254,116 @@ function SettingsPage() {
             Save
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Which Python and MATLAB the Scripts tab runs.
+ *
+ * A picker rather than a detected default because PATH is not enough to decide:
+ * this machine has six python3s and the first one on PATH has no pandas, so
+ * guessing produces "ModuleNotFoundError: pandas" on a machine that has pandas.
+ * Each candidate is shown with what it can actually import.
+ */
+function RuntimesCard() {
+  const qc = useQueryClient();
+  const detected = useQuery({ queryKey: ["runtimes"], queryFn: () => api.detectRuntimes() });
+  const [matlabTest, setMatlabTest] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: async ({ key, value }: { key: string; value: string }) => {
+      await api.setSetting(key, value);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["runtimes"] });
+      toast.success("Saved");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save"),
+  });
+
+  const testMatlab = useMutation({
+    mutationFn: (binPath: string) => api.testMatlab(binPath),
+    onSuccess: (res) => setMatlabTest(res.detail),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "MATLAB test failed"),
+  });
+
+  const python = detected.data?.python;
+  const matlab = detected.data?.matlab;
+
+  return (
+    <div className="mt-8 space-y-6 rounded-2xl border border-border/70 bg-card p-6 shadow-card sm:p-8">
+      <div className="flex items-center gap-2">
+        <div className="grid h-9 w-9 place-items-center rounded-xl bg-secondary">
+          <Terminal className="h-4 w-4 text-foreground" />
+        </div>
+        <div>
+          <div className="text-sm font-bold text-foreground">Analysis runtimes</div>
+          <div className="text-[11px] text-muted-foreground">
+            Which Python and MATLAB the Scripts tab runs.
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-xs font-semibold">Python</Label>
+        <Select
+          value={python?.selected ?? ""}
+          onValueChange={(v) => save.mutate({ key: "python_path", value: v })}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder={detected.isLoading ? "Looking…" : "No Python found"} />
+          </SelectTrigger>
+          <SelectContent>
+            {python?.candidates
+              .filter((c) => c.ok)
+              .map((c) => (
+                <SelectItem key={c.path} value={c.path}>
+                  {c.detail} — {c.path}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+        {python && python.candidates.filter((c) => c.ok).length === 0 && !detected.isLoading && (
+          <p className="text-[11px] text-muted-foreground">
+            No working Python found. Install one (python.org or Homebrew) and reopen Settings.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-1.5">
+        <Label className="text-xs font-semibold">MATLAB</Label>
+        <div className="flex gap-2">
+          <Select
+            value={matlab?.selected ?? ""}
+            onValueChange={(v) => save.mutate({ key: "matlab_path", value: v })}
+          >
+            <SelectTrigger className="flex-1">
+              <SelectValue placeholder={detected.isLoading ? "Looking…" : "No MATLAB found"} />
+            </SelectTrigger>
+            <SelectContent>
+              {matlab?.candidates.map((c) => (
+                <SelectItem key={c.path} value={c.path}>
+                  {c.detail} — {c.path}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            disabled={!matlab?.selected || testMatlab.isPending}
+            onClick={() => matlab?.selected && testMatlab.mutate(matlab.selected)}
+            className="gap-1.5"
+          >
+            {testMatlab.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Test
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {matlabTest ??
+            "The release is read from the install path. Testing actually starts MATLAB, which takes 20–40 seconds."}
+        </p>
       </div>
     </div>
   );

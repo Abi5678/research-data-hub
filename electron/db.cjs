@@ -141,6 +141,33 @@ function open(dbPath) {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_analysis_views_project ON analysis_views(project_id);
+    CREATE TABLE IF NOT EXISTS scripts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      language TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      entry_filename TEXT NOT NULL,
+      origin_path TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scripts_project ON scripts(project_id);
+    CREATE TABLE IF NOT EXISTS script_runs (
+      id TEXT PRIMARY KEY,
+      script_id TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      exit_code INTEGER,
+      run_dir TEXT NOT NULL,
+      code_snapshot TEXT NOT NULL,
+      inputs TEXT NOT NULL DEFAULT '[]',
+      outputs TEXT NOT NULL DEFAULT '[]',
+      stdout TEXT NOT NULL DEFAULT '',
+      stderr TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_runs_script ON script_runs(script_id);
   `);
   // Datasets backed by an attached database are query-only.
   const hasReadOnly = db
@@ -1555,6 +1582,54 @@ function queryDataset(datasetId, limit = 5000) {
     .all();
 }
 
+function csvCell(v) {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Write a whole dataset to a CSV file for a script to read.
+ *
+ * Deliberately uncapped, unlike every other read path here. The 200k row cap on
+ * queries exists because those rows go into memory and then into a browser; this
+ * goes row by row into a file, so the cap would buy nothing and cost the thing
+ * that matters — a script silently analysing the first 200,000 rows of a
+ * 2,000,000-row dataset produces a wrong answer that looks entirely right.
+ *
+ * Works on a combined dataset unchanged: it is an ordinary datasets row whose
+ * table is a view, and iterate() walks a view the same as a table.
+ */
+function writeDatasetCsv(datasetId, filePath) {
+  const ds = getDatasetOrThrow(datasetId);
+  const cols = ds.column_schema.map((c) => c.name);
+  if (cols.length === 0) throw new Error(`Dataset "${ds.display_name}" has no columns`);
+  const colList = cols.map(quoteIdent).join(", ");
+
+  const fd = fs.openSync(filePath, "w");
+  let rowCount = 0;
+  try {
+    // Batched into one write per few thousand rows: a write syscall per row
+    // dominates the runtime at millions of rows.
+    let buf = cols.map(csvCell).join(",") + "\n";
+    const stmt = db.prepare(`SELECT ${colList} FROM ${quoteIdent(ds.table_name)}`);
+    for (const row of stmt.iterate()) {
+      buf += cols.map((c) => csvCell(row[c])).join(",") + "\n";
+      rowCount += 1;
+      if (buf.length > 1 << 20) {
+        fs.writeSync(fd, buf);
+        buf = "";
+      }
+    }
+    if (buf.length > 0) fs.writeSync(fd, buf);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { path: filePath, row_count: rowCount, columns: cols };
+}
+
+// Upper bound on rows a single query may return. High enough that exports of
+// a full dataset are not silently clipped; low enough to stay in memory.
 const MAX_QUERY_ROWS = 200000;
 
 // Port of public.run_project_query() — same guardrails, SQLite execution.
@@ -1682,6 +1757,142 @@ function insertImportHistory({ projectId, folderPath, mode, report }) {
 }
 
 // ---------- backup / restore ----------
+
+// ---------- scripts ----------
+
+const SCRIPT_LANGUAGES = { python: ".py", matlab: ".m" };
+
+function assertLanguage(language) {
+  if (!Object.hasOwn(SCRIPT_LANGUAGES, language)) {
+    throw new Error(`Unsupported script language: ${language}`);
+  }
+  return language;
+}
+
+/** A filename the runner can safely write into a run folder and hand to an
+ *  interpreter. MATLAB is the strict one: `-batch` takes a function name, so
+ *  the stem must be a valid identifier — a leading digit or a hyphen makes a
+ *  script that exists but cannot be invoked. */
+function scriptEntryFilename(name, language) {
+  const ext = SCRIPT_LANGUAGES[assertLanguage(language)];
+  let stem = sanitizeIdent(String(name ?? "").replace(/\.(py|m)$/i, ""));
+  if (/^[0-9]/.test(stem)) stem = `s_${stem}`;
+  return `${stem.slice(0, 48) || "analysis"}${ext}`;
+}
+
+function listScripts(projectId) {
+  return db
+    .prepare(
+      `SELECT s.*, (SELECT COUNT(*) FROM script_runs r WHERE r.script_id = s.id) AS run_count
+       FROM scripts s WHERE s.project_id = ? ORDER BY s.updated_at DESC`,
+    )
+    .all(projectId);
+}
+
+function getScript(scriptId) {
+  const row = db.prepare("SELECT * FROM scripts WHERE id = ?").get(scriptId);
+  if (!row) throw new Error("Script not found");
+  return row;
+}
+
+function createScript({ projectId, name, language, code, originPath }) {
+  assertLanguage(language);
+  const t = now();
+  const id = uuid();
+  const displayName = String(name || "").trim() || "Untitled script";
+  db.prepare(
+    `INSERT INTO scripts (id, project_id, name, language, code, entry_filename, origin_path, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    projectId,
+    displayName,
+    language,
+    String(code ?? ""),
+    scriptEntryFilename(displayName, language),
+    originPath ?? null,
+    t,
+    t,
+  );
+  return getScript(id);
+}
+
+/** Renaming rewrites entry_filename, so a MATLAB script's file keeps matching
+ *  the name shown in the UI — the name is what `-batch` invokes. */
+function updateScript(scriptId, { name, code }) {
+  const s = getScript(scriptId);
+  const nextName = name === undefined ? s.name : String(name).trim() || s.name;
+  db.prepare(
+    "UPDATE scripts SET name = ?, code = ?, entry_filename = ?, updated_at = ? WHERE id = ?",
+  ).run(
+    nextName,
+    code === undefined ? s.code : String(code),
+    scriptEntryFilename(nextName, s.language),
+    now(),
+    scriptId,
+  );
+  return getScript(scriptId);
+}
+
+function deleteScript(scriptId) {
+  const s = getScript(scriptId);
+  // Run rows cascade; the run folders on disk are the runner's to remove.
+  const dirs = db
+    .prepare("SELECT run_dir FROM script_runs WHERE script_id = ?")
+    .all(scriptId)
+    .map((r) => r.run_dir);
+  db.prepare("DELETE FROM scripts WHERE id = ?").run(scriptId);
+  return { deleted: s.name, run_dirs: dirs };
+}
+
+function parseRun(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    inputs: JSON.parse(row.inputs || "[]"),
+    outputs: JSON.parse(row.outputs || "[]"),
+  };
+}
+
+function listScriptRuns(scriptId, limit = 25) {
+  const lim = Math.min(Math.max(Number(limit) || 25, 1), 200);
+  return db
+    .prepare(`SELECT * FROM script_runs WHERE script_id = ? ORDER BY started_at DESC LIMIT ${lim}`)
+    .all(scriptId)
+    .map(parseRun);
+}
+
+function getScriptRun(runId) {
+  const row = db.prepare("SELECT * FROM script_runs WHERE id = ?").get(runId);
+  if (!row) throw new Error("Run not found");
+  return parseRun(row);
+}
+
+/** Recorded before the process starts, so a run that crashes the app still
+ *  leaves a row saying what was attempted and where its folder is. */
+function createScriptRun({ runId, scriptId, runDir, codeSnapshot, inputs }) {
+  db.prepare(
+    `INSERT INTO script_runs (id, script_id, started_at, status, run_dir, code_snapshot, inputs)
+     VALUES (?, ?, ?, 'running', ?, ?, ?)`,
+  ).run(runId, scriptId, now(), runDir, String(codeSnapshot ?? ""), JSON.stringify(inputs ?? []));
+  return getScriptRun(runId);
+}
+
+function finishScriptRun(runId, { status, exitCode, stdout, stderr, outputs }) {
+  db.prepare(
+    `UPDATE script_runs SET finished_at = ?, status = ?, exit_code = ?, stdout = ?, stderr = ?, outputs = ?
+     WHERE id = ?`,
+  ).run(
+    now(),
+    status,
+    exitCode ?? null,
+    String(stdout ?? ""),
+    String(stderr ?? ""),
+    JSON.stringify(outputs ?? []),
+    runId,
+  );
+  return getScriptRun(runId);
+}
 
 function getDatabasePath() {
   return dbFilePath;
@@ -1813,6 +2024,17 @@ module.exports = {
   combinedDependents,
   freezeCombinedDataset,
   datasetRowCount,
+  writeDatasetCsv,
+  listScripts,
+  getScript,
+  createScript,
+  updateScript,
+  deleteScript,
+  listScriptRuns,
+  getScriptRun,
+  createScriptRun,
+  finishScriptRun,
+  scriptEntryFilename,
   getDatabasePath,
   backupDatabase,
   restoreDatabase,

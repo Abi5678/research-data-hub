@@ -14,6 +14,7 @@ const ATTACH_UNAVAILABLE =
 // has neither that restriction nor attached databases, so the lab server would
 // need a genuinely different implementation rather than a port.
 const COMBINE_UNAVAILABLE = "Combined datasets are only available in the desktop app.";
+const SCRIPTS_UNAVAILABLE = "Analysis scripts are only available in the desktop app.";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {
@@ -197,6 +198,47 @@ export const httpApi: LocalApi = {
   // Only combined datasets ever need counting on demand, and there are none
   // here, so listDatasets already carries a real number for every dataset.
   datasetRowCount: async () => null,
+  // Scripts run on the machine the app is installed on. There is no such
+  // machine in server mode, so the tab is hidden rather than half-working.
+  listScripts: async () => [],
+  getScript: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  createScript: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  updateScript: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  deleteScript: async (): Promise<string> => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  scriptEntryFilename: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  listScriptRuns: async () => [],
+  getScriptRun: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  pickScriptFile: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  runScript: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  cancelScriptRun: async () => false,
+  readRunFile: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  openRunFolder: async () => {
+    throw new Error(SCRIPTS_UNAVAILABLE);
+  },
+  detectRuntimes: async () => ({
+    python: { candidates: [], selected: null },
+    matlab: { candidates: [], selected: null },
+  }),
+  testMatlab: async () => ({ ok: false, detail: SCRIPTS_UNAVAILABLE }),
+  onScriptRunEvent: () => () => {},
 };
 
 export type AuthUser = { id: string; email: string; global_role: "admin" | "user" };

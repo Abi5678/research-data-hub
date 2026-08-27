@@ -20,6 +20,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import type { ColumnSchema } from "@/lib/csv";
+import { isServerMode } from "@/lib/mode";
 import type { CombineRecipe } from "@/lib/api";
 import { DatasetUploadDialog } from "@/components/project/dataset-upload";
 import { AttachedSources } from "@/components/project/attached-sources";
@@ -28,6 +29,7 @@ import { QueryTab } from "@/components/project/query-tab";
 import { BrowseTab } from "@/components/project/browse-tab";
 import { AnalyzeTab } from "@/components/project/analyze-tab";
 import { ChatTab } from "@/components/project/chat-tab";
+import { ScriptsTab } from "@/components/project/scripts-tab";
 import { ResultsTable } from "@/components/project/results-table";
 import { exportRows } from "@/lib/export";
 import { ErdDiagram } from "@/components/project/erd-diagram";
@@ -55,6 +57,7 @@ import {
   Table2,
   LineChart,
   MessageSquare,
+  Terminal,
 } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId")({
@@ -257,6 +260,11 @@ function ProjectDetailPage() {
           <TabsTrigger value="search" className="gap-1.5">
             <Search className="h-3.5 w-3.5" /> Search
           </TabsTrigger>
+          {!isServerMode && (
+            <TabsTrigger value="scripts" className="gap-1.5">
+              <Terminal className="h-3.5 w-3.5" /> Scripts
+            </TabsTrigger>
+          )}
           <TabsTrigger value="exports" className="gap-1.5">
             <History className="h-3.5 w-3.5" /> Export history
           </TabsTrigger>
@@ -308,6 +316,9 @@ function ProjectDetailPage() {
         </TabsContent>
         <TabsContent value="search" className="mt-6">
           <GlobalSearch projectId={projectId} datasets={datasets ?? []} />
+        </TabsContent>
+        <TabsContent value="scripts" className="mt-6">
+          <ScriptsTab projectId={projectId} datasets={datasets ?? []} />
         </TabsContent>
         <TabsContent value="exports" className="mt-6">
           <ExportsTab projectId={projectId} />
