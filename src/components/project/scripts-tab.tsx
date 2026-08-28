@@ -77,6 +77,10 @@ export function ScriptsTab({
   const [datasetId, setDatasetId] = useState<string>("");
   const [log, setLog] = useState<LogLine[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  /** The script that owns the in-flight run — distinct from `selectedId`
+   *  because the sidebar doesn't lock while a run is going, so what's running
+   *  and what's displayed can point at two different scripts. */
+  const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<ScriptRun | null>(null);
   const [pendingRun, setPendingRun] = useState(false);
   const [confirmTrust, setConfirmTrust] = useState(false);
@@ -142,21 +146,28 @@ export function ScriptsTab({
 
   useEffect(() => {
     return api.onScriptRunEvent((event) => {
+      // A stray/late event from a run this tab is no longer tracking (e.g. it
+      // already reported "done" once). Never let it reopen a finished run.
+      if (event.runId !== activeRunId) return;
+      // The run belongs to whichever script started it, which may not be the
+      // one currently open in the editor — don't paint another script's
+      // output into this one's log.
+      const forSelectedScript = activeScriptId === selectedId;
       if (event.kind === "done") {
         setActiveRunId(null);
         setPendingRun(false);
         if (event.error) {
-          setLog((prev) => [...prev, { kind: "stderr", text: event.error! }]);
+          if (forSelectedScript) setLog((prev) => [...prev, { kind: "stderr", text: event.error! }]);
           toast.error(event.error);
         } else if (event.run) {
-          setLastRun(event.run);
+          if (forSelectedScript) setLastRun(event.run);
         }
-        void queryClient.invalidateQueries({ queryKey: ["script-runs", selectedId] });
+        void queryClient.invalidateQueries({ queryKey: ["script-runs", activeScriptId] });
         return;
       }
-      setLog((prev) => [...prev, { kind: event.kind, text: event.text }]);
+      if (forSelectedScript) setLog((prev) => [...prev, { kind: event.kind, text: event.text }]);
     });
-  }, [queryClient, selectedId]);
+  }, [queryClient, selectedId, activeRunId, activeScriptId]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -228,6 +239,7 @@ export function ScriptsTab({
         datasetIds: [dataset.id],
       });
       setActiveRunId(runId);
+      setActiveScriptId(selected.id);
     } catch (err) {
       setPendingRun(false);
       toast.error((err as Error).message);
