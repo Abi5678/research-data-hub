@@ -151,8 +151,17 @@ function prepareRun({ runId, script, datasets }) {
   fs.mkdirSync(runDir, { recursive: true });
 
   const inputs = [];
+  const usedNames = new Set();
   datasets.forEach((ds, i) => {
-    const name = i === 0 ? "data.csv" : `data_${slug(ds.display_name)}.csv`;
+    let name = i === 0 ? "data.csv" : `data_${slug(ds.display_name)}.csv`;
+    // Two display names that slug to the same thing (e.g. "Test Data" and
+    // "test-data") would otherwise share a filename and silently overwrite
+    // one dataset's CSV with the next's.
+    if (usedNames.has(name)) {
+      const ext = path.extname(name);
+      name = `${name.slice(0, -ext.length)}_${i}${ext}`;
+    }
+    usedNames.add(name);
     const written = db.writeDatasetCsv(ds.id, path.join(runDir, name));
     inputs.push({
       dataset_id: ds.id,
