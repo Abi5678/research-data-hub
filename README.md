@@ -212,8 +212,18 @@ closing, or every recipient has to run the `xattr` command:
    `Apple Development: …`, which Gatekeeper rejects for distribution.
 2. Notarization credentials, so `electron-builder` stops reporting
    `skipped macOS notarization`.
-3. An app icon — builds currently log
-   `default Electron icon is used, reason=application icon is not set`.
+
+The app icon is drawn by [scripts/make-icon.py](scripts/make-icon.py) rather
+than checked in only as a binary, so a colour or proportion can be changed
+without a design tool:
+
+```bash
+python3 scripts/make-icon.py
+```
+
+It writes `build/icon.png`, `build/icon.icns` (via macOS `iconutil`) and
+`build/icon.ico`, which `electron-builder` picks up from `buildResources`.
+Needs Pillow.
 
 The Windows installer in `release/` is older than the macOS one and predates
 the rename to Fieldbook; rebuild it before handing it to anyone.

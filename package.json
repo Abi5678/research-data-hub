@@ -117,7 +117,8 @@
     "appId": "com.fieldbook.app",
     "productName": "Fieldbook",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**",
@@ -128,7 +129,8 @@
         "dmg",
         "dir"
       ],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns"
     },
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**"
@@ -142,7 +144,8 @@
           ]
         }
       ],
-      "artifactName": "${productName} Setup ${version}.${ext}"
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
