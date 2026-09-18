@@ -13,6 +13,7 @@ import {
 } from "@/lib/script-assist";
 import { coerceRow, parseCsv, type ColumnSchema } from "@/lib/csv";
 import { BUNDLED_SCRIPTS } from "@/lib/bundled-scripts";
+import { ResultsTable } from "@/components/project/results-table";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -682,6 +683,19 @@ const IMAGE_MIME: Record<string, string> = {
  */
 const FULL_SIZE_FIGURES = 2;
 
+/** Rows of a result CSV shown inline before the reader is told to go look. */
+const PREVIEW_ROWS = 10;
+
+/**
+ * Result CSVs above this size are listed but not previewed. The preview reads
+ * the whole file back over IPC and parses it in the renderer to show ten rows;
+ * a deliverable table is kilobytes, and a script that dumps half a million rows
+ * should not stall the run report to show the top of it.
+ */
+const PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+type CsvPreview = { columns: string[]; rows: Record<string, unknown>[]; total: number };
+
 /**
  * What the script left behind. Figures are shown rather than named — the figure
  * is usually the whole reason the script was run — and a result CSV can be
@@ -691,6 +705,7 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
   const queryClient = useQueryClient();
   const [images, setImages] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [previews, setPreviews] = useState<Record<string, CsvPreview>>({});
   const [importing, setImporting] = useState<string | null>(null);
 
   const figures = useMemo(
@@ -725,6 +740,34 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
       cancelled = true;
     };
   }, [figures]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviews({});
+    for (const out of files) {
+      if (out.kind !== "csv" || out.size > PREVIEW_MAX_BYTES) continue;
+      void api
+        .readRunFile(run.id, out.name)
+        .then((f) => {
+          const parsed = parseCsv(new TextDecoder().decode(base64ToBytes(f.base64)));
+          if (cancelled || parsed.columns.length === 0) return;
+          setPreviews((prev) => ({
+            ...prev,
+            [out.name]: {
+              columns: parsed.columns.map((c) => c.name),
+              rows: parsed.rows.slice(0, PREVIEW_ROWS).map((r) => previewRow(r, parsed.columns)),
+              total: parsed.meta.totalRows,
+            },
+          }));
+        })
+        // Same as a figure that will not read back: the file row and the run
+        // folder are still there, so a preview is not worth an error for.
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [files]);
 
   async function importCsv(name: string) {
     setImporting(name);
@@ -862,6 +905,21 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
                     </Button>
                   )}
                 </div>
+                {previews[out.name] && (
+                  <div className="mt-2">
+                    <ResultsTable
+                      columns={previews[out.name].columns}
+                      rows={previews[out.name].rows}
+                    />
+                    {previews[out.name].total > previews[out.name].rows.length && (
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        First {previews[out.name].rows.length} of{" "}
+                        {previews[out.name].total.toLocaleString()} rows — import it as a dataset
+                        to see them all.
+                      </p>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -874,6 +932,24 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
 /** Path separators in an output's name — 0 for a file beside the results. */
 function depthOf(name: string): number {
   return (name.match(/[/\\]/g) ?? []).length;
+}
+
+/**
+ * One preview row, typed enough for ResultsTable to format it.
+ *
+ * parseCsv hands back raw strings, and ResultsTable only rounds actual numbers,
+ * so a float column would otherwise show all 17 digits of 149.49666666666667.
+ * Converting here makes the preview read the way the same table reads after
+ * Import as dataset — which is the round trip the preview exists to save.
+ */
+function previewRow(raw: Record<string, string>, columns: ColumnSchema[]) {
+  const out: Record<string, unknown> = {};
+  for (const c of columns) {
+    const v = raw[c.original_name ?? c.name] ?? "";
+    const numeric = c.type === "integer" || c.type === "double precision";
+    out[c.name] = numeric && v !== "" ? Number(v) : v;
+  }
+  return out;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
