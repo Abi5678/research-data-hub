@@ -11,7 +11,8 @@ import {
   parseAssistReply,
   SAMPLE_ROWS,
 } from "@/lib/script-assist";
-import { coerceRow, parseCsv, type ColumnSchema } from "@/lib/csv";
+import { coerceRow, parseCsv, type ColumnSchema, type ParsedCsv } from "@/lib/csv";
+import { isXlsxFile, parseXlsx } from "@/lib/xlsx";
 import { BUNDLED_SCRIPTS } from "@/lib/bundled-scripts";
 import { ResultsTable } from "@/components/project/results-table";
 import { Button } from "@/components/ui/button";
@@ -706,7 +707,39 @@ const PREVIEW_ROWS = 10;
  */
 const PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 
-type CsvPreview = { columns: string[]; rows: Record<string, unknown>[]; total: number };
+type CsvPreview = {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  total: number;
+  /** Set only for a workbook: which sheet is shown, and how many there are. */
+  sheet?: string;
+  sheets?: number;
+};
+
+/** A result file the run report can read as a table. */
+function isTabular(out: { name: string; kind: string }): boolean {
+  return out.kind === "csv" || isXlsxFile(out.name);
+}
+
+/**
+ * A result file as named tables — one for a CSV, one per sheet for a workbook.
+ *
+ * The .xlsx is usually the copy that actually gets emailed, so it has to be
+ * readable here on the same terms as the CSV rather than being a filename with
+ * no way in.
+ */
+async function readOutputTables(
+  runId: string,
+  name: string,
+): Promise<{ label: string; parsed: ParsedCsv }[]> {
+  const file = await api.readRunFile(runId, name);
+  const bytes = base64ToBytes(file.base64);
+  if (isXlsxFile(name)) {
+    const sheets = await parseXlsx(new File([bytes], name));
+    return sheets.map((s) => ({ label: s.name, parsed: s.parsed }));
+  }
+  return [{ label: "", parsed: parseCsv(new TextDecoder().decode(bytes)) }];
+}
 
 /**
  * What the script left behind. Figures are shown rather than named — the figure
@@ -757,18 +790,21 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
     let cancelled = false;
     setPreviews({});
     for (const out of files) {
-      if (out.kind !== "csv" || out.size > PREVIEW_MAX_BYTES) continue;
-      void api
-        .readRunFile(run.id, out.name)
-        .then((f) => {
-          const parsed = parseCsv(new TextDecoder().decode(base64ToBytes(f.base64)));
-          if (cancelled || parsed.columns.length === 0) return;
+      if (!isTabular(out) || out.size > PREVIEW_MAX_BYTES) continue;
+      void readOutputTables(run.id, out.name)
+        .then((tables) => {
+          // A workbook previews its first sheet; the row says how many there are.
+          const first = tables[0];
+          if (cancelled || !first || first.parsed.columns.length === 0) return;
+          const { parsed } = first;
           setPreviews((prev) => ({
             ...prev,
             [out.name]: {
               columns: parsed.columns.map((c) => c.name),
               rows: parsed.rows.slice(0, PREVIEW_ROWS).map((r) => previewRow(r, parsed.columns)),
               total: parsed.meta.totalRows,
+              sheet: first.label || undefined,
+              sheets: tables.length > 1 ? tables.length : undefined,
             },
           }));
         })
@@ -781,31 +817,42 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
     };
   }, [files]);
 
-  async function importCsv(name: string) {
+  async function importTables(name: string) {
     setImporting(name);
     try {
-      const file = await api.readRunFile(run.id, name);
-      const parsed = parseCsv(new TextDecoder().decode(base64ToBytes(file.base64)));
-      if (parsed.columns.length === 0 || parsed.rows.length === 0) {
-        throw new Error("That file has no rows to import.");
-      }
-      const created = await api.createProjectDataset({
-        projectId,
-        displayName: name.replace(/\.csv$/i, ""),
-        sourceFilename: name,
-        columns: parsed.columns.map((c) => ({
-          name: c.name,
-          original_name: c.original_name ?? c.name,
-          type: c.type,
-        })),
-      });
-      const rows = parsed.rows.map((raw) => coerceRow(raw, parsed.columns).row);
-      const CHUNK = 1000;
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        await api.insertDatasetRowsTyped(created.dataset_id, rows.slice(i, i + CHUNK));
+      const tables = (await readOutputTables(run.id, name)).filter(
+        (t) => t.parsed.columns.length > 0 && t.parsed.rows.length > 0,
+      );
+      if (tables.length === 0) throw new Error("That file has no rows to import.");
+
+      // A workbook becomes one dataset per sheet, named so two sheets of the same
+      // workbook cannot collide and so the row still says where it came from.
+      const base = name.replace(/\.(csv|xlsx|xlsm)$/i, "");
+      let imported = 0;
+      for (const { label, parsed } of tables) {
+        const created = await api.createProjectDataset({
+          projectId,
+          displayName: tables.length > 1 ? `${base} — ${label}` : base,
+          sourceFilename: name,
+          columns: parsed.columns.map((c) => ({
+            name: c.name,
+            original_name: c.original_name ?? c.name,
+            type: c.type,
+          })),
+        });
+        const rows = parsed.rows.map((raw) => coerceRow(raw, parsed.columns).row);
+        const CHUNK = 1000;
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          await api.insertDatasetRowsTyped(created.dataset_id, rows.slice(i, i + CHUNK));
+        }
+        imported += rows.length;
       }
       void queryClient.invalidateQueries({ queryKey: ["datasets", projectId] });
-      toast.success(`Imported ${rows.length.toLocaleString()} rows as a dataset`);
+      toast.success(
+        tables.length > 1
+          ? `Imported ${tables.length} sheets, ${imported.toLocaleString()} rows`
+          : `Imported ${imported.toLocaleString()} rows as a dataset`,
+      );
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -900,13 +947,13 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
                 <div className="flex items-center gap-2 text-[11px]">
                   <code className="truncate">{out.name}</code>
                   <span className="text-muted-foreground">{formatSize(out.size)}</span>
-                  {out.kind === "csv" && (
+                  {isTabular(out) && (
                     <Button
                       size="sm"
                       variant="outline"
                       className="ml-auto h-6 text-[11px]"
                       disabled={!!importing}
-                      onClick={() => void importCsv(out.name)}
+                      onClick={() => void importTables(out.name)}
                     >
                       {importing === out.name ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
@@ -919,6 +966,13 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
                 </div>
                 {previews[out.name] && (
                   <div className="mt-2">
+                    {/* Only worth saying which sheet this is when there is more than one. */}
+                    {previews[out.name].sheets && (
+                      <p className="mb-1 text-[10px] text-muted-foreground">
+                        Sheet “{previews[out.name].sheet}” of {previews[out.name].sheets} — Import
+                        as dataset brings in all of them.
+                      </p>
+                    )}
                     <ResultsTable
                       columns={previews[out.name].columns}
                       rows={previews[out.name].rows}
@@ -964,7 +1018,10 @@ function previewRow(raw: Record<string, string>, columns: ColumnSchema[]) {
   return out;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
+// The ArrayBuffer parameter is what lets the result go straight into a File:
+// a plain Uint8Array could in principle be backed by a SharedArrayBuffer, and
+// this one never is.
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
