@@ -142,6 +142,21 @@ describe("startRun", () => {
     expect(names).not.toContain("inputs.json");
   });
 
+  it("reclaims the seeded CSV after a good run, and keeps it after a bad one", async () => {
+    // The seeded copy is the bulk of a run folder and is reproducible from the
+    // database, so a successful run does not need to keep it. A failed one does:
+    // that is exactly when someone opens the folder to see what the script was
+    // handed. The script snapshot stays either way — it is the reproducer.
+    const ok = await run(makeScript("print('fine')\n"));
+    expect(ok.result.status).toBe("ok");
+    expect(fs.existsSync(path.join(ok.result.run_dir, "data.csv"))).toBe(false);
+    expect(fs.existsSync(path.join(ok.result.run_dir, "inputs.json"))).toBe(true);
+
+    const bad = await run(makeScript("raise SystemExit(2)\n"));
+    expect(bad.result.status).toBe("failed");
+    expect(fs.existsSync(path.join(bad.result.run_dir, "data.csv"))).toBe(true);
+  });
+
   it("kills a script that runs past its timeout", async () => {
     const script = makeScript("import time\ntime.sleep(60)\n");
     const { result } = await run(script, { timeoutMs: 1500 });

@@ -311,6 +311,8 @@ async function startRun({ runId, scriptId, datasetIds, interpreter, timeoutMs },
     .filter((rel) => !seeded.has(rel) && !rel.startsWith(".mplconfig" + path.sep))
     .map((rel) => describeOutput(runDir, rel));
 
+  if (result.status === "ok") discardSeededInputs(runDir, inputs);
+
   const finished = db.finishScriptRun(runId, {
     status: result.status,
     exitCode: result.exitCode,
@@ -354,6 +356,33 @@ function readRunFile(runId, name) {
     size: stat.size,
     base64: fs.readFileSync(full).toString("base64"),
   };
+}
+
+/**
+ * Drop the CSVs we seeded, once nothing is going to read them again.
+ *
+ * They are the bulk of a run folder — a full copy of every selected dataset,
+ * 15 MB for a typical IDEAL-CT run over eight sheets — and they are exactly
+ * reproducible from the database. Left in place they accumulate silently under
+ * userData with nothing in the UI that reclaims them, since removeRunDirs only
+ * ever fires when a script is deleted.
+ *
+ * A failed run keeps them: that is precisely when someone opens the folder to
+ * see what the script was actually handed.
+ */
+function discardSeededInputs(runDir, inputs) {
+  for (const i of inputs) {
+    try {
+      fs.rmSync(path.join(runDir, i.file), { force: true });
+    } catch {
+      /* best effort — a locked file is not worth failing a good run over */
+    }
+  }
+  try {
+    fs.rmSync(path.join(runDir, ".mplconfig"), { recursive: true, force: true });
+  } catch {
+    /* ditto */
+  }
 }
 
 function removeRunDirs(dirs) {

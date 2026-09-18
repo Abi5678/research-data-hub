@@ -672,6 +672,17 @@ const IMAGE_MIME: Record<string, string> = {
 };
 
 /**
+ * How many figures render at full size before the rest become thumbnails.
+ *
+ * A per-specimen script writes one plot per specimen — the IDEAL-CT template
+ * writes 30 — and at 420px each that is thirty screens of scrolling with the
+ * log stranded at the top. Figures are ordered by how deep in the run folder
+ * they sit, so a summary figure written beside the results (ct_index.png) is
+ * the one that stays big and a folder of per-item plots collapses.
+ */
+const FULL_SIZE_FIGURES = 2;
+
+/**
  * What the script left behind. Figures are shown rather than named — the figure
  * is usually the whole reason the script was run — and a result CSV can be
  * imported straight back, so script output becomes queryable project data.
@@ -679,13 +690,23 @@ const IMAGE_MIME: Record<string, string> = {
 function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
   const queryClient = useQueryClient();
   const [images, setImages] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState<string | null>(null);
+
+  const figures = useMemo(
+    () =>
+      run.outputs
+        .filter((o) => o.kind === "image")
+        .sort((a, b) => depthOf(a.name) - depthOf(b.name)),
+    [run],
+  );
+  const files = useMemo(() => run.outputs.filter((o) => o.kind !== "image"), [run]);
 
   useEffect(() => {
     let cancelled = false;
     setImages({});
-    for (const out of run.outputs) {
-      if (out.kind !== "image") continue;
+    setExpanded(new Set());
+    for (const out of figures) {
       const ext = out.name.split(".").pop()?.toLowerCase() ?? "";
       const mime = IMAGE_MIME[ext];
       if (!mime) continue;
@@ -703,7 +724,7 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [run]);
+  }, [figures]);
 
   async function importCsv(name: string) {
     setImporting(name);
@@ -737,44 +758,122 @@ function RunOutputs({ run, projectId }: { run: ScriptRun; projectId: string }) {
     }
   }
 
+  function toggle(name: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
+  }
+
+  const big = figures.slice(0, FULL_SIZE_FIGURES);
+  const small = figures.slice(FULL_SIZE_FIGURES);
+
   return (
-    <div className="space-y-2">
-      <p className="text-[11px] font-medium">Files this run wrote</p>
-      <ul className="space-y-2">
-        {run.outputs.map((out) => (
-          <li key={out.name} className="rounded-md border border-border/70 p-2">
-            <div className="flex items-center gap-2 text-[11px]">
-              <code className="truncate">{out.name}</code>
-              <span className="text-muted-foreground">{formatSize(out.size)}</span>
-              {out.kind === "csv" && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto h-6 text-[11px]"
-                  disabled={!!importing}
-                  onClick={() => void importCsv(out.name)}
-                >
-                  {importing === out.name ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <FilePlus2 className="h-3 w-3" />
-                  )}
-                  Import as dataset
-                </Button>
+    <div className="space-y-4">
+      {figures.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-medium">
+            {figures.length === 1 ? "1 figure" : `${figures.length} figures`}
+          </p>
+          {big.map((out) => (
+            <div key={out.name} className="rounded-md border border-border/70 p-2">
+              <div className="flex items-center gap-2 text-[11px]">
+                <code className="truncate">{out.name}</code>
+                <span className="text-muted-foreground">{formatSize(out.size)}</span>
+              </div>
+              {images[out.name] && (
+                <img
+                  src={images[out.name]}
+                  alt={out.name}
+                  className="mt-2 max-h-[420px] w-auto rounded border border-border/70 bg-white"
+                />
               )}
             </div>
-            {images[out.name] && (
-              <img
-                src={images[out.name]}
-                alt={out.name}
-                className="mt-2 max-h-[420px] w-auto rounded border border-border/70 bg-white"
-              />
-            )}
-          </li>
-        ))}
-      </ul>
+          ))}
+          {small.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {small.map((out) =>
+                expanded.has(out.name) ? (
+                  <button
+                    key={out.name}
+                    type="button"
+                    title={`${out.name} — click to collapse`}
+                    className="w-full rounded-md border border-border/70 p-2 text-left"
+                    onClick={() => toggle(out.name)}
+                  >
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <code className="truncate">{out.name}</code>
+                      <span className="text-muted-foreground">{formatSize(out.size)}</span>
+                    </div>
+                    {images[out.name] && (
+                      <img
+                        src={images[out.name]}
+                        alt={out.name}
+                        className="mt-2 max-h-[420px] w-auto rounded border border-border/70 bg-white"
+                      />
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    key={out.name}
+                    type="button"
+                    title={`${out.name} — click to enlarge`}
+                    className="rounded border border-border/70 bg-white p-0.5 hover:border-primary"
+                    onClick={() => toggle(out.name)}
+                  >
+                    {images[out.name] ? (
+                      <img src={images[out.name]} alt={out.name} className="h-20 w-auto" />
+                    ) : (
+                      <span className="flex h-20 w-28 items-center justify-center px-1 text-[10px] text-muted-foreground">
+                        {out.name}
+                      </span>
+                    )}
+                  </button>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-medium">Files this run wrote</p>
+          <ul className="space-y-2">
+            {files.map((out) => (
+              <li key={out.name} className="rounded-md border border-border/70 p-2">
+                <div className="flex items-center gap-2 text-[11px]">
+                  <code className="truncate">{out.name}</code>
+                  <span className="text-muted-foreground">{formatSize(out.size)}</span>
+                  {out.kind === "csv" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto h-6 text-[11px]"
+                      disabled={!!importing}
+                      onClick={() => void importCsv(out.name)}
+                    >
+                      {importing === out.name ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <FilePlus2 className="h-3 w-3" />
+                      )}
+                      Import as dataset
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
+}
+
+/** Path separators in an output's name — 0 for a file beside the results. */
+function depthOf(name: string): number {
+  return (name.match(/[/\\]/g) ?? []).length;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
