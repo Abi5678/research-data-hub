@@ -29,7 +29,7 @@ const MAX_OUTPUT_FILES = 200;
 /** Grace between asking a process to stop and making it. */
 const KILL_GRACE_MS = 5000;
 
-let runsRoot = path.join(os.tmpdir(), "research-data-hub-script-runs");
+let runsRoot = path.join(os.tmpdir(), "fieldbook-script-runs");
 
 /** Where run folders live. Set from main.cjs to Electron's userData; tests
  *  point it at a temp directory. */
@@ -173,8 +173,13 @@ function prepareRun({ runId, script, datasets }) {
   });
 
   fs.writeFileSync(path.join(runDir, script.entry_filename), script.code, "utf8");
+  fs.writeFileSync(path.join(runDir, "inputs.json"), JSON.stringify({ inputs }, null, 2));
   // Not an output, and not something to offer back to the user as one.
-  const seeded = new Set([script.entry_filename, ...inputs.map((i) => i.file)]);
+  const seeded = new Set([
+    script.entry_filename,
+    "inputs.json",
+    ...inputs.map((i) => i.file),
+  ]);
   return { runDir, inputs, seeded };
 }
 

@@ -62,7 +62,7 @@ import {
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId")({
   head: () => ({
-    meta: [{ title: "Project — Research Data Hub" }, { name: "robots", content: "noindex" }],
+    meta: [{ title: "Project — Fieldbook" }, { name: "robots", content: "noindex" }],
   }),
   component: ProjectDetailPage,
 });

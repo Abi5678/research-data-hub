@@ -2,7 +2,7 @@
   "key": "asphalt_field_mix",
   "name": "Asphalt Field Mix Research",
   "tagline": "Pavement field-core testing schema",
-  "description": "Pre-built schema for asphalt field mix studies. Includes test sections, specimens, IFIT, complex modulus, DTCF, field performance, binder tests, and a file registry.",
+  "description": "Pre-built schema for asphalt field mix studies. Includes test sections, specimens, I-FIT, IDEAL-CT, complex modulus, DTCF, field performance, binder tests, and a file registry.",
   "steps": ["Sections", "Specimens", "Test Results", "Registry"],
   "tables": [
     {
@@ -38,6 +38,7 @@
         { "name": "diameter_mm", "type": "double precision" },
         { "name": "height_mm", "type": "double precision" },
         { "name": "air_voids_pct", "type": "double precision" },
+        { "name": "gmb", "type": "double precision" },
         { "name": "gmm", "type": "double precision" },
         { "name": "test_date", "type": "text" }
       ],
@@ -58,6 +59,25 @@
         { "name": "peak_load_kn", "type": "double precision" },
         { "name": "fracture_energy_nm", "type": "double precision" },
         { "name": "test_temperature_c", "type": "double precision" }
+      ],
+      "fks": [{ "column": "specimen_id", "references": { "table": "specimens", "column": "id" } }]
+    },
+    {
+      "key": "ideal_ct_results",
+      "display_name": "IDEAL-CT Results",
+      "description": "Indirect tensile cracking test (ASTM D8225) — CT Index, fracture energy, post-peak slope, and tensile strength.",
+      "step": 3,
+      "columns": [
+        { "name": "id", "type": "integer", "pk": true },
+        { "name": "specimen_id", "type": "integer" },
+        { "name": "test_temperature_c", "type": "double precision" },
+        { "name": "peak_load", "type": "double precision", "note": "Same units as the raw Force column" },
+        { "name": "m75", "type": "double precision" },
+        { "name": "l75", "type": "double precision" },
+        { "name": "failure_work", "type": "double precision" },
+        { "name": "fracture_energy_jm2", "type": "double precision" },
+        { "name": "ct_index", "type": "double precision" },
+        { "name": "tensile_strength_mpa", "type": "double precision" }
       ],
       "fks": [{ "column": "specimen_id", "references": { "table": "specimens", "column": "id" } }]
     },
@@ -149,6 +169,11 @@
       "name": "All 5-year cores |E*| at 30°C, 10 Hz",
       "description": "Dynamic modulus at 30°C and 10 Hz for specimens tagged as 5-year field cores, joined to section metadata.",
       "sql": "-- Replace the ds_* table names with the ones in this project.\nSELECT\n  s.section_code,\n  s.pg_grade,\n  sp.specimen_code,\n  sp.core_year,\n  cm.temperature_c,\n  cm.frequency_hz,\n  cm.dynamic_modulus_mpa,\n  cm.phase_angle_deg\nFROM ds_complex_modulus_results cm\nJOIN ds_specimens sp     ON sp.id         = cm.specimen_id\nJOIN ds_test_sections s  ON s.section_id  = sp.section_id\nWHERE cm.temperature_c BETWEEN 29 AND 31\n  AND cm.frequency_hz  BETWEEN 9.5 AND 10.5\n  AND sp.core_year LIKE '%5%'\nORDER BY s.section_code, sp.specimen_code"
+    },
+    {
+      "name": "CT Index vs air voids",
+      "description": "IDEAL-CT cracking index next to specimen Gmb, Gmm, and air voids.",
+      "sql": "SELECT\n  s.section_code,\n  sp.specimen_code,\n  sp.gmb,\n  sp.gmm,\n  sp.air_voids_pct,\n  AVG(ct.ct_index) AS ct_index_avg,\n  AVG(ct.fracture_energy_jm2) AS gf_avg,\n  AVG(ct.tensile_strength_mpa) AS ts_avg\nFROM ds_specimens sp\nJOIN ds_test_sections s ON s.section_id = sp.section_id\nLEFT JOIN ds_ideal_ct_results ct ON ct.specimen_id = sp.id\nGROUP BY s.section_code, sp.specimen_code, sp.gmb, sp.gmm, sp.air_voids_pct\nHAVING AVG(ct.ct_index) IS NOT NULL\nORDER BY s.section_code, sp.specimen_code"
     },
     {
       "name": "FI vs Sapp correlation",

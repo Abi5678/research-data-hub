@@ -1939,7 +1939,7 @@ function assertRestorable(srcPath) {
   if (integrity !== "ok") throw new Error(`That backup is damaged (${integrity})`);
   for (const required of ["projects", "datasets"]) {
     if (!tables.has(required)) {
-      throw new Error(`That file is not a Research Data Hub backup (no "${required}" table)`);
+      throw new Error(`That file is not a Fieldbook backup (no "${required}" table)`);
     }
   }
 }

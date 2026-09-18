@@ -51,7 +51,7 @@ function LoginPage() {
             Shared lab workspace
           </div>
           <h1 id="login-title" className="text-2xl font-extrabold tracking-tight">
-            Research Data Hub
+            Fieldbook
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Sign in to access your research projects and shared data.

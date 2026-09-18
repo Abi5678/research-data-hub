@@ -4,6 +4,8 @@ import { useState } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { BUNDLED_SCRIPTS } from "@/lib/bundled-scripts";
+import { isServerMode } from "@/lib/mode";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,7 +16,7 @@ import { TEMPLATES } from "@/lib/templates";
 export const Route = createFileRoute("/_authenticated/projects/new")({
   head: () => ({
     meta: [
-      { title: "New project — Research Data Hub" },
+      { title: "New project — Fieldbook" },
       {
         name: "description",
         content:
@@ -70,8 +72,24 @@ function NewProjectPage() {
         template_key: templateKey,
       });
     },
-    onSuccess: (id) => {
+    onSuccess: async (id) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
+      if (templateKey === "asphalt_field_mix" && !isServerMode) {
+        try {
+          await Promise.all(
+            BUNDLED_SCRIPTS.map((s) =>
+              api.createScript({
+                projectId: id,
+                name: s.name,
+                language: s.language,
+                code: s.code,
+              }),
+            ),
+          );
+        } catch {
+          /* Scripts are desktop-only; creating the project still succeeded. */
+        }
+      }
       toast.success("Project created");
       if (templateKey) {
         navigate({ to: "/projects/$projectId/setup", params: { projectId: id } });

@@ -12,15 +12,10 @@ import {
   SAMPLE_ROWS,
 } from "@/lib/script-assist";
 import { coerceRow, parseCsv, type ColumnSchema } from "@/lib/csv";
+import { BUNDLED_SCRIPTS } from "@/lib/bundled-scripts";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -74,7 +69,7 @@ export function ScriptsTab({
   /** Set while the editor holds unsaved edits, so switching scripts does not
    *  silently discard them and saving does not fight the query cache. */
   const [dirty, setDirty] = useState(false);
-  const [datasetId, setDatasetId] = useState<string>("");
+  const [datasetIds, setDatasetIds] = useState<string[]>([]);
   const [log, setLog] = useState<LogLine[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   /** The script that owns the in-flight run — distinct from `selectedId`
@@ -116,7 +111,11 @@ export function ScriptsTab({
     () => datasets.filter((d) => !d.unavailable_reason),
     [datasets],
   );
-  const dataset = runnableDatasets.find((d) => d.id === datasetId) ?? null;
+  const selectedDatasets = useMemo(
+    () => runnableDatasets.filter((d) => datasetIds.includes(d.id)),
+    [runnableDatasets, datasetIds],
+  );
+  const dataset = selectedDatasets[0] ?? null;
 
   const interpreter = selected
     ? selected.language === "matlab"
@@ -140,9 +139,12 @@ export function ScriptsTab({
     if (!selectedId && scripts.data?.length) setSelectedId(scripts.data[0].id);
   }, [scripts.data, selectedId]);
 
+  const datasetsInitialized = useRef(false);
   useEffect(() => {
-    if (!datasetId && runnableDatasets.length) setDatasetId(runnableDatasets[0].id);
-  }, [runnableDatasets, datasetId]);
+    if (datasetsInitialized.current || runnableDatasets.length === 0) return;
+    datasetsInitialized.current = true;
+    setDatasetIds(runnableDatasets.map((d) => d.id));
+  }, [runnableDatasets]);
 
   useEffect(() => {
     return api.onScriptRunEvent((event) => {
@@ -222,7 +224,7 @@ export function ScriptsTab({
    *  `trusted.data` there would see the pre-refetch value and reopen the dialog
    *  forever, since this closure captured it at render. */
   async function startRun(trustChecked = false) {
-    if (!selected || !dataset) return;
+    if (!selected || selectedDatasets.length === 0) return;
     if (!trustChecked && !trusted.data) {
       setConfirmTrust(true);
       return;
@@ -236,7 +238,7 @@ export function ScriptsTab({
     try {
       const { runId } = await api.runScript({
         scriptId: selected.id,
-        datasetIds: [dataset.id],
+        datasetIds: selectedDatasets.map((d) => d.id),
       });
       setActiveRunId(runId);
       setActiveScriptId(selected.id);
@@ -311,10 +313,30 @@ export function ScriptsTab({
 
         <div className="space-y-1">
           {scripts.data?.length === 0 && (
-            <p className="rounded-lg border border-dashed border-border/70 p-4 text-xs text-muted-foreground">
-              Add an existing Python or MATLAB script. The file is copied in — the original on
-              disk is never changed.
-            </p>
+            <div className="space-y-2 rounded-lg border border-dashed border-border/70 p-3">
+              <p className="text-xs text-muted-foreground">
+                Add an existing Python or MATLAB script, or start with IDEAL-CT. The file is copied
+                in — the original on disk is never changed.
+              </p>
+              {BUNDLED_SCRIPTS.map((bundled) => (
+                <Button
+                  key={bundled.id}
+                  size="sm"
+                  variant="secondary"
+                  className="w-full justify-start text-left"
+                  onClick={() =>
+                    createScript.mutate({
+                      projectId,
+                      name: bundled.name,
+                      language: bundled.language,
+                      code: bundled.code,
+                    })
+                  }
+                >
+                  <FileCode2 className="h-3.5 w-3.5" /> {bundled.name}
+                </Button>
+              ))}
+            </div>
           )}
           {scripts.data?.map((s) => (
             <button
@@ -337,6 +359,26 @@ export function ScriptsTab({
               </span>
             </button>
           ))}
+          {BUNDLED_SCRIPTS.filter(
+            (b) => !scripts.data?.some((s) => s.name === b.name),
+          ).map((bundled) => (
+            <button
+              key={bundled.id}
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[11px] text-muted-foreground hover:bg-secondary/50"
+              onClick={() =>
+                createScript.mutate({
+                  projectId,
+                  name: bundled.name,
+                  language: bundled.language,
+                  code: bundled.code,
+                })
+              }
+            >
+              <FilePlus2 className="h-3.5 w-3.5 shrink-0" />
+              Add {bundled.name}
+            </button>
+          ))}
         </div>
       </aside>
 
@@ -348,21 +390,47 @@ export function ScriptsTab({
         <div className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[220px] flex-1">
-              <Label className="text-xs">Dataset</Label>
-              <Select value={datasetId} onValueChange={setDatasetId}>
-                <SelectTrigger className="mt-1 h-9">
-                  <SelectValue placeholder="Choose a dataset" />
-                </SelectTrigger>
-                <SelectContent>
-                  {runnableDatasets.map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.display_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-xs">Datasets</Label>
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground underline"
+                  onClick={() => {
+                    const all = runnableDatasets.map((d) => d.id);
+                    setDatasetIds(datasetIds.length === all.length ? [] : all);
+                  }}
+                >
+                  {datasetIds.length === runnableDatasets.length ? "Clear" : "Select all"}
+                </button>
+              </div>
+              <div className="mt-1 max-h-36 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
+                {runnableDatasets.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">Import an Excel or CSV first.</p>
+                )}
+                {runnableDatasets.map((d) => (
+                  <label key={d.id} className="flex cursor-pointer items-start gap-2 text-xs">
+                    <Checkbox
+                      checked={datasetIds.includes(d.id)}
+                      onCheckedChange={(on) =>
+                        setDatasetIds((prev) =>
+                          on ? [...prev, d.id] : prev.filter((id) => id !== d.id),
+                        )
+                      }
+                    />
+                    <span className="min-w-0 leading-4">
+                      <span className="block truncate">{d.display_name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {d.column_schema.filter((c) => c.name !== "row_id").length} columns
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-            <Button onClick={() => void startRun()} disabled={running || !dataset || !interpreter}>
+            <Button
+              onClick={() => void startRun()}
+              disabled={running || selectedDatasets.length === 0 || !interpreter}
+            >
               <Play className="h-3.5 w-3.5" /> Run
             </Button>
             {running && (
@@ -440,18 +508,31 @@ export function ScriptsTab({
                 actually called this year. */}
             <div className="rounded-lg border border-border/70 p-3">
               <p className="text-xs font-medium">
-                The data is at{" "}
-                <code className="rounded bg-secondary px-1 py-0.5 text-[10px]">data.csv</code>
+                Selected tables are written as CSV files plus{" "}
+                <code className="rounded bg-secondary px-1 py-0.5 text-[10px]">inputs.json</code>
               </p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Written into the working directory before your script runs.
+                The first table is{" "}
+                <code className="rounded bg-secondary px-1 py-0.5 text-[10px]">data.csv</code>.
+                Each extra sheet or file is{" "}
+                <code className="rounded bg-secondary px-1 py-0.5 text-[10px]">data_&lt;name&gt;.csv</code>
+                . IDEAL-CT finds specimens in those tables automatically.
               </p>
-              <p className="mt-3 text-xs font-medium">Columns</p>
-              <ul className="mt-1 max-h-[280px] space-y-0.5 overflow-y-auto text-[11px]">
-                {dataset?.column_schema.map((c) => (
-                  <li key={c.name} className="flex items-baseline justify-between gap-2">
-                    <code className="truncate">{c.name}</code>
-                    <span className="shrink-0 text-muted-foreground">{c.type}</span>
+              <p className="mt-3 text-xs font-medium">
+                Columns{selectedDatasets.length > 1 ? ` · ${selectedDatasets.length} tables` : ""}
+              </p>
+              <ul className="mt-1 max-h-[280px] space-y-2 overflow-y-auto text-[11px]">
+                {selectedDatasets.map((ds) => (
+                  <li key={ds.id}>
+                    <p className="truncate font-medium text-muted-foreground">{ds.display_name}</p>
+                    {ds.column_schema
+                      .filter((c) => c.name !== "row_id")
+                      .map((c) => (
+                        <div key={c.name} className="flex items-baseline justify-between gap-2 pl-1">
+                          <code className="truncate">{c.name}</code>
+                          <span className="shrink-0 text-muted-foreground">{c.type}</span>
+                        </div>
+                      ))}
                   </li>
                 ))}
               </ul>

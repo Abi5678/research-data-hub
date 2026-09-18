@@ -9,7 +9,7 @@ import { ArrowRight, Bot, Database, FolderPlus, Sparkles, Calendar, User2 } from
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
-      { title: "Dashboard — Research Data Hub" },
+      { title: "Dashboard — Fieldbook" },
       {
         name: "description",
         content:

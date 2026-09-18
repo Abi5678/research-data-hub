@@ -65,7 +65,7 @@ async function toXlsxBuffer(
   sheetName: string,
 ): Promise<ArrayBuffer> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Research Data Hub";
+  wb.creator = "Fieldbook";
   const ws = wb.addWorksheet(sheetName.slice(0, 31) || "Data");
   ws.addRow(columns);
   ws.getRow(1).font = { bold: true };

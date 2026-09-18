@@ -107,6 +107,11 @@ describe("startRun", () => {
     expect(result.stdout).toContain("rows 3");
     expect(result.stdout).toContain("cols sample_id,air_voids,note");
     expect(result.inputs[0]).toMatchObject({ file: "data.csv", row_count: 3 });
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.run_dir, "inputs.json"), "utf8"),
+    );
+    expect(manifest.inputs[0].file).toBe("data.csv");
+    expect(manifest.inputs[0].display_name).toBe("Mix results");
     // The live log streamed rather than arriving only at exit.
     expect(events.some((e) => e.kind === "stdout")).toBe(true);
   });
@@ -134,6 +139,7 @@ describe("startRun", () => {
     expect(result.outputs.find((o) => o.name === "summary.csv").kind).toBe("csv");
     // data.csv and the script itself are inputs, not results.
     expect(names).not.toContain("data.csv");
+    expect(names).not.toContain("inputs.json");
   });
 
   it("kills a script that runs past its timeout", async () => {

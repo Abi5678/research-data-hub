@@ -1,4 +1,4 @@
-# Research Data Hub — Lab server deployment
+# Fieldbook — Lab server deployment
 
 Run the shared **Postgres + API + web UI** on one lab machine. Colleagues open a browser on the LAN or over [Tailscale](https://tailscale.com/).
 

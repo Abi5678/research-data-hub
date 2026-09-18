@@ -57,10 +57,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
               <div className="min-w-0 group-data-[collapsible=icon]:hidden">
                 <div className="truncate text-sm font-bold tracking-tight text-foreground">
-                  Research Data Hub
+                  Fieldbook
                 </div>
                 <div className="truncate text-[11px] font-medium text-muted-foreground">
-                  Research data workspace
+                  Civil research workspace
                 </div>
               </div>
             </div>

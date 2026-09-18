@@ -35,7 +35,7 @@ import {
 export const Route = createFileRoute("/_authenticated/projects/$projectId/setup")({
   head: () => ({
     meta: [
-      { title: "Set up template — Research Data Hub" },
+      { title: "Set up template — Fieldbook" },
       { name: "robots", content: "noindex" },
     ],
   }),

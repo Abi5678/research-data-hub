@@ -54,14 +54,14 @@ export function assistSystemPrompt(language: "python" | "matlab"): string {
   const lang = language === "matlab" ? "MATLAB" : "Python";
   return `You adapt existing ${lang} analysis scripts so they run against a specific dataset.
 
-The script runs with its working directory set to a folder that already contains the dataset as a CSV file named data.csv. It has no network access and no other input files.
+The script runs with its working directory set to a folder that already contains the selected datasets as CSV files and an inputs.json manifest listing each file's display name. The first dataset is data.csv. It has no network access and no other input files.
 
 Rules:
-1. Change the data-loading line(s) to read data.csv from the working directory. Do not use an absolute path.
+1. Change the data-loading line(s) to read data.csv (and other files from inputs.json) from the working directory. Do not use an absolute path.
 2. Use ONLY the column names listed, spelled exactly. Rename references to old headers accordingly.
 3. Change nothing else. Keep the author's structure, comments, variable names and analysis intent intact.
 4. Do not add network calls, file deletion, shell commands, or installs.
-5. Save figures to files in the working directory rather than displaying them interactively.
+5. Save figures and result tables to files in the working directory rather than displaying them interactively.
 
 Reply with the COMPLETE rewritten file inside a single fenced code block, then a short plain-English list of what you changed. No other code blocks.`;
 }
@@ -76,6 +76,8 @@ export function assistUserPrompt(args: {
   const { code, truncated } = truncateScript(args.code);
   const parts = [
     `Dataset: ${args.dataset.display_name}`,
+    ``,
+    `This dataset is written to data.csv in the run folder. Other selected tables are listed in inputs.json.`,
     ``,
     `Columns in data.csv:`,
     describeColumns(args.dataset.column_schema),

@@ -31,7 +31,7 @@ describe("restoreDatabase", () => {
     const other = new Database(foreign);
     other.exec("CREATE TABLE foo (x INTEGER)");
     other.close();
-    expect(() => db.restoreDatabase(foreign)).toThrow(/not a Research Data Hub backup/i);
+    expect(() => db.restoreDatabase(foreign)).toThrow(/not a Fieldbook backup/i);
 
     // Nothing was closed or copied, so the app is still working.
     expect(() => db.listProjects()).not.toThrow();

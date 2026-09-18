@@ -104,7 +104,7 @@ function registerIpc() {
     const win = BrowserWindow.fromWebContents(event.sender);
     const res = await dialog.showSaveDialog(win, {
       title: "Backup database",
-      defaultPath: `research-data-hub-backup-${new Date().toISOString().slice(0, 10)}.sqlite3`,
+      defaultPath: `fieldbook-backup-${new Date().toISOString().slice(0, 10)}.sqlite3`,
       filters: [{ name: "SQLite", extensions: ["sqlite3", "db"] }],
     });
     if (res.canceled || !res.filePath) return null;
@@ -240,7 +240,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    title: "Research Data Hub",
+    title: "Fieldbook",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -257,11 +257,11 @@ function createWindow() {
 
 // Keep dev and packaged builds on the same userData directory. Research data
 // must not live inside the source tree; set DB_PATH for an isolated dev copy.
-app.setName("Research Data Hub");
+app.setName("Fieldbook");
 
 app.whenReady().then(() => {
   const dbPath =
-    process.env.DB_PATH || path.join(app.getPath("userData"), "research-data-hub.sqlite3");
+    process.env.DB_PATH || path.join(app.getPath("userData"), "fieldbook.sqlite3");
   dbApi.open(dbPath);
   console.log(`SQLite database: ${dbPath}`);
 

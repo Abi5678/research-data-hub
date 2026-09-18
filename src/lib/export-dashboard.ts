@@ -136,7 +136,7 @@ function buildPdf(input: DashboardExportInput): Blob {
 
 async function buildXlsx(input: DashboardExportInput): Promise<ArrayBuffer> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "Research Data Hub";
+  wb.creator = "Fieldbook";
   wb.created = new Date();
 
   const summary = wb.addWorksheet("Summary");

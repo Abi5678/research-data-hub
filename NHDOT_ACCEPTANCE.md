@@ -1,4 +1,4 @@
-# NHDOT Acceptance Checklist - Research Data Hub
+# NHDOT Acceptance Checklist - Fieldbook
 
 Use this checklist for production sign-off (lab server + desktop). Cloud NVIDIA NIM must remain **off** (`ALLOW_CLOUD_NIM` unset or not `1`).
 

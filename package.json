@@ -1,8 +1,8 @@
 {
   "name": "research-data-hub",
   "version": "1.0.0",
-  "description": "Offline desktop workspace: turn research CSVs into a queryable local database",
-  "author": "Research Data Hub",
+  "description": "Civil research field book: turn CSVs into a queryable local database",
+  "author": "Fieldbook",
   "private": true,
   "sideEffects": false,
   "type": "module",
@@ -114,8 +114,8 @@
     "wait-on": "^8.0.2"
   },
   "build": {
-    "appId": "com.researchdatahub.app",
-    "productName": "Research Data Hub",
+    "appId": "com.fieldbook.app",
+    "productName": "Fieldbook",
     "directories": {
       "output": "release"
     },
@@ -150,7 +150,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Research Data Hub"
+      "shortcutName": "Fieldbook"
     }
   }
 }
