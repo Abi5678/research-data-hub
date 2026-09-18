@@ -30,6 +30,11 @@ SPECIMEN_DEFAULTS = {
     "temperature_c": 25.0,
 }
 
+# Only for messages and the assumed_values column, so a reader can see at a
+# glance which numbers the script supplied rather than measured.
+GUESS_LABELS = {"diameter_mm": "diameter", "thickness_mm": "thickness", "temperature_c": "temperature"}
+GUESS_UNITS = {"diameter_mm": "mm", "thickness_mm": "mm", "temperature_c": "C"}
+
 FORCE_ALIASES = ("force", "load", "load_kn", "load_n", "peak_load")
 DISP_ALIASES = ("lvdt", "disp", "displacement", "stroke", "deformation")
 NAME_ALIASES = (
@@ -49,6 +54,7 @@ DIA_ALIASES = (
     "diameter_avg",
     "avg",
     "diameter_mm",
+    "dia_mm",
     "dia",
     "diameter",
     "d_mm",
@@ -94,6 +100,96 @@ def _safe_name(name: str) -> str:
     return slug[:60] or "specimen"
 
 
+# Trailing units to ignore when reading a column name, so "Force, kN" and
+# "LVDT, mm" reduce to the same role tokens as a bare "Force" / "LVDT".
+UNIT_TOKENS = {"mm", "cm", "m", "um", "in", "kn", "n", "kgf", "lbf", "s", "sec"}
+FORCE_TOKENS = {"force", "load"}
+DISP_TOKENS = {"lvdt", "disp", "displacement", "stroke", "deformation"}
+
+
+def _column_role(col: str):
+    """Split a trace column into (specimen key, role, matched token).
+
+    Lab exports put one specimen per column *pair* and carry the specimen id
+    only in the column name — "ABPL-RT-1 LVDT, mm" / "ABPL-RT-1 Force, kN" —
+    so the id has to be read off the prefix. A plain "Force"/"LVDT" yields an
+    empty prefix, which means the whole table is one specimen.
+    """
+    tokens = [t for t in _norm(col).split("_") if t]
+    while len(tokens) > 1 and tokens[-1] in UNIT_TOKENS:
+        tokens.pop()
+    if not tokens:
+        return None
+    last = tokens[-1]
+    role = "force" if last in FORCE_TOKENS else "disp" if last in DISP_TOKENS else None
+    if role is None:
+        return None
+    return "_".join(tokens[:-1]), role, last
+
+
+def _pretty_prefix(col: str, token: str, fallback: str) -> str:
+    """The specimen id as the sheet wrote it, e.g. "ABPL-RT-1"."""
+    match = re.search(rf"(?i){re.escape(token)}", col)
+    trimmed = col[: match.start()].strip(" ,;-_") if match else ""
+    return trimmed or fallback
+
+
+def trace_pairs(df: pd.DataFrame, fallback_name: str):
+    """Every (specimen label, key, disp column, force column) in a table."""
+    found: dict[str, dict] = {}
+    for col in df.columns:
+        role = _column_role(str(col))
+        if role is None:
+            continue
+        key, kind, token = role
+        entry = found.setdefault(key, {})
+        # First column of each role wins, so a stray duplicate cannot displace
+        # the pair this specimen is actually named after.
+        entry.setdefault(kind, col)
+        entry.setdefault("label", _pretty_prefix(str(col), token, fallback_name))
+    pairs = []
+    for key, entry in found.items():
+        if "force" in entry and "disp" in entry:
+            pairs.append((entry["label"], key, entry["disp"], entry["force"]))
+    return pairs
+
+
+def specimen_metadata(tables) -> dict[str, dict]:
+    """Specimen id -> diameter/thickness/temperature, gathered from any table
+    that lists them per specimen.
+
+    The raw trace sheet carries no geometry; it lives in a separate summary
+    table the user uploads alongside, keyed by specimen id."""
+    meta: dict[str, dict] = {}
+    for _, path in tables:
+        try:
+            head = pd.read_csv(path, nrows=0)
+        except Exception:
+            continue
+        name_col = _find(head.columns, NAME_ALIASES)
+        fields = {
+            "diameter_mm": _find(head.columns, DIA_ALIASES),
+            "thickness_mm": _find(head.columns, THK_ALIASES),
+            "temperature_c": _find(head.columns, TEMP_ALIASES),
+        }
+        if not name_col or not any(fields.values()):
+            continue
+        usecols = [name_col] + [c for c in fields.values() if c]
+        df = pd.read_csv(path, usecols=usecols)
+        for _, rec in df.iterrows():
+            key = _norm(rec[name_col])
+            if not key:
+                continue
+            entry = meta.setdefault(key, {"display": str(rec[name_col]).strip()})
+            for field, col in fields.items():
+                if col is None or field in entry:
+                    continue
+                value = pd.to_numeric(rec[col], errors="coerce")
+                if np.isfinite(value):
+                    entry[field] = float(value)
+    return meta
+
+
 def load_tables():
     manifest = Path("inputs.json")
     if manifest.exists():
@@ -111,9 +207,14 @@ def load_tables():
 
 
 def compute_ct_index(force: np.ndarray, disp: np.ndarray, diameter_mm: float, thickness_mm: float):
-    negative_idx = np.where(force < 0)[0]
-    if len(negative_idx) > 0:
-        cut = int(negative_idx[0])
+    # Drop the tail after the specimen fails and the load crosses back through
+    # zero. Only negatives *after* the peak count: a trace typically opens with
+    # pre-load sensor noise straddling zero, and cutting at the first negative
+    # anywhere truncates the whole test to those few noise points.
+    peak_idx = int(np.argmax(force))
+    after_peak = np.where(force[peak_idx:] < 0)[0]
+    if after_peak.size > 0:
+        cut = peak_idx + int(after_peak[0])
         force = force[:cut]
         disp = disp[:cut]
     if force.size < 4:
@@ -182,18 +283,17 @@ def specimen_groups(df: pd.DataFrame, fallback_name: str):
     return groups or [(fallback_name, df)]
 
 
-def analyze_table(name: str, path: Path, plot_dir: Path) -> list[dict]:
+def analyze_table(name: str, path: Path, plot_dir: Path, meta: dict[str, dict]) -> list[dict]:
     df = pd.read_csv(path)
     print(f"\n{name} ({path.name}): {len(df)} rows, columns {list(df.columns)}")
 
-    force_col = _find(df.columns, FORCE_ALIASES)
-    disp_col = _find(df.columns, DISP_ALIASES)
+    pairs = trace_pairs(df, name)
     ct_col = _find(df.columns, CT_ALIASES)
     dia_col = _find(df.columns, DIA_ALIASES)
     thk_col = _find(df.columns, THK_ALIASES)
     temp_col = _find(df.columns, TEMP_ALIASES)
 
-    if ct_col and not (force_col and disp_col):
+    if ct_col and not pairs:
         rows = []
         for spec_name, g in specimen_groups(df, name):
             ct_vals = _numeric(g[ct_col]).dropna()
@@ -220,7 +320,7 @@ def analyze_table(name: str, path: Path, plot_dir: Path) -> list[dict]:
 
     gmb_col = _find(df.columns, GMB_ALIASES)
     name_col = _find(df.columns, NAME_ALIASES)
-    if gmb_col and name_col and not (force_col and disp_col):
+    if gmb_col and name_col and not pairs:
         air_col = _find(df.columns, AIR_ALIASES)
         rows = []
         seen = set()
@@ -261,22 +361,59 @@ def analyze_table(name: str, path: Path, plot_dir: Path) -> list[dict]:
             )
         return rows
 
-    if not force_col or not disp_col:
-        print("  Skipped — no Force/LVDT trace, CT Index, or Gmb specimen table.")
+    if not pairs:
+        if name_col and (dia_col or thk_col or temp_col):
+            # Not skipped at all — specimen_metadata() already read it, and the
+            # trace tables get their diameter/thickness/temperature from here.
+            print("  Specimen details — supplied diameter/thickness/temperature.")
+        else:
+            print("  Skipped — no Force/LVDT trace, CT Index, or Gmb specimen table.")
         return []
 
+    # One column pair means any specimens are stacked in rows and told apart by
+    # an id column; several pairs mean one specimen per pair, named by prefix.
+    if len(pairs) == 1:
+        _, _, disp_col, force_col = pairs[0]
+        specimens = [
+            (label, _norm(label), g[force_col], g[disp_col], g)
+            for label, g in specimen_groups(df, name)
+        ]
+    else:
+        specimens = [
+            (label, key, df[force_col], df[disp_col], df)
+            for label, key, disp_col, force_col in pairs
+        ]
+
     rows = []
-    for spec_name, g in specimen_groups(df, name):
-        work = g.copy()
-        work["_force"] = _numeric(work[force_col])
-        work["_disp"] = _numeric(work[disp_col])
-        work = work.dropna(subset=["_force", "_disp"])
+    for spec_name, spec_key, force_series, disp_series, g in specimens:
+        work = pd.DataFrame(
+            {"_force": _numeric(force_series), "_disp": _numeric(disp_series)}
+        ).dropna()
         if work.empty:
             print(f"  {spec_name}: no numeric Force/LVDT rows")
             continue
-        dia = first_number(work[dia_col], SPECIMEN_DEFAULTS["diameter_mm"]) if dia_col else SPECIMEN_DEFAULTS["diameter_mm"]
-        thick = first_number(work[thk_col], SPECIMEN_DEFAULTS["thickness_mm"]) if thk_col else SPECIMEN_DEFAULTS["thickness_mm"]
-        temp = first_number(work[temp_col], SPECIMEN_DEFAULTS["temperature_c"]) if temp_col else SPECIMEN_DEFAULTS["temperature_c"]
+        info = meta.get(spec_key, {})
+        spec_name = info.get("display", spec_name)
+
+        guessed = []
+
+        def pick(col, field):
+            """This table's own column, else the specimen summary table, else a default."""
+            if col is not None:
+                value = first_number(g[col], np.nan)
+                if np.isfinite(value):
+                    return value
+            if field in info:
+                return float(info[field])
+            # Recorded, not just returned. CT scales as 1/(D^2*t), so a guessed
+            # diameter or thickness moves the answer by a percent or so — small
+            # enough to look right in a report and wrong enough to matter.
+            guessed.append(field)
+            return float(SPECIMEN_DEFAULTS[field])
+
+        dia = pick(dia_col, "diameter_mm")
+        thick = pick(thk_col, "thickness_mm")
+        temp = pick(temp_col, "temperature_c")
         try:
             result = compute_ct_index(
                 work["_force"].to_numpy(dtype=float),
@@ -310,6 +447,7 @@ def analyze_table(name: str, path: Path, plot_dir: Path) -> list[dict]:
                 "fracture_energy_jm2": result["fracture_energy_jm2"],
                 "ct_index": result["ct_index"],
                 "tensile_strength_mpa": result["tensile_strength_mpa"],
+                "assumed_values": ", ".join(GUESS_LABELS[f] for f in guessed),
             }
         )
         print(
@@ -317,6 +455,14 @@ def analyze_table(name: str, path: Path, plot_dir: Path) -> list[dict]:
             f"Gf = {result['fracture_energy_jm2']:.1f} J/m^2, "
             f"ITS = {result['tensile_strength_mpa']:.3f} MPa"
         )
+        if guessed:
+            print(
+                "    ! assumed "
+                + ", ".join(
+                    f"{GUESS_LABELS[f]} = {SPECIMEN_DEFAULTS[f]:g} {GUESS_UNITS[f]}" for f in guessed
+                )
+                + f" — no value for {spec_name} in any selected table"
+            )
     return rows
 
 
@@ -324,10 +470,11 @@ tables = load_tables()
 if not tables:
     raise SystemExit("No datasets found. Select one or more tables in Fieldbook and run again.")
 
+meta = specimen_metadata(tables)
 plot_dir = Path("plots")
 all_rows: list[dict] = []
 for display_name, path in tables:
-    all_rows.extend(analyze_table(display_name, path, plot_dir))
+    all_rows.extend(analyze_table(display_name, path, plot_dir, meta))
 
 if not all_rows:
     raise SystemExit(
@@ -365,3 +512,12 @@ n_plots = len(list(plot_dir.glob("*.png"))) if plot_dir.exists() else 0
 print(f"\nWrote ct_index_results.csv{xlsx_note}" + (", ct_index.png" if fig is not None else "") + (f", and {n_plots} specimen plots" if n_plots else ""))
 print(f"{len(out)} specimens")
 print(out.to_string(index=False))
+
+if "assumed_values" in out.columns:
+    assumed = out[out["assumed_values"].fillna("") != ""]
+    if not assumed.empty:
+        print(
+            f"\nWARNING: {len(assumed)} of {len(out)} specimens used assumed values — see the "
+            "assumed_values column. Select the table that lists Specimen, Dia, Thickness and "
+            "Temperature alongside the trace table to use the measured ones."
+        )
