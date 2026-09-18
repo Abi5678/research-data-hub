@@ -117,6 +117,10 @@ export function ScriptsTab({
     [runnableDatasets, datasetIds],
   );
   const dataset = selectedDatasets[0] ?? null;
+  // Counted off selectedDatasets, not datasetIds: an id left over from a dataset
+  // that has since become unavailable would otherwise read as a selection.
+  const allSelected =
+    runnableDatasets.length > 0 && selectedDatasets.length === runnableDatasets.length;
 
   const interpreter = selected
     ? selected.language === "matlab"
@@ -393,18 +397,26 @@ export function ScriptsTab({
             <div className="min-w-[220px] flex-1">
               <div className="flex items-center justify-between gap-2">
                 <Label className="text-xs">Datasets</Label>
-                <button
-                  type="button"
-                  className="text-[11px] text-muted-foreground underline"
-                  onClick={() => {
-                    const all = runnableDatasets.map((d) => d.id);
-                    setDatasetIds(datasetIds.length === all.length ? [] : all);
-                  }}
-                >
-                  {datasetIds.length === runnableDatasets.length ? "Clear" : "Select all"}
-                </button>
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  {/* The count is what the box cannot show once the list scrolls. */}
+                  {runnableDatasets.length > 0 && (
+                    <span>
+                      {selectedDatasets.length} of {runnableDatasets.length} selected
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="underline disabled:no-underline disabled:opacity-50"
+                    disabled={runnableDatasets.length === 0}
+                    onClick={() => {
+                      setDatasetIds(allSelected ? [] : runnableDatasets.map((d) => d.id));
+                    }}
+                  >
+                    {allSelected ? "Clear" : "Select all"}
+                  </button>
+                </div>
               </div>
-              <div className="mt-1 max-h-36 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
+              <div className="mt-1 max-h-72 space-y-1 overflow-y-auto rounded-md border border-border/70 p-2">
                 {runnableDatasets.length === 0 && (
                   <p className="text-[11px] text-muted-foreground">Import an Excel or CSV first.</p>
                 )}
